@@ -4458,6 +4458,7 @@ var Calc = ERP.Calc = {
         tax: c.tax, lineTotal: c.lineTotal
       });
     });
+    var totalQty      = items.reduce(function (a, i) { return a + i.quantity; }, 0);
     var subtotal      = M.sum(items.map(function (i) { return M.mul(i.unitPrice, i.quantity); }));
     var itemDiscounts = M.sum(items.map(function (i) { return i.discount; }));
     var itemTax       = M.sum(items.map(function (i) { return i.tax; }));
@@ -4466,6 +4467,9 @@ var Calc = ERP.Calc = {
     var freight       = M.toP(draft.freightR !== undefined ? draft.freightR : draft.freight);
     var loading       = M.toP(draft.loadingR !== undefined ? draft.loadingR : draft.loading);
     var other         = M.toP(draft.otherChargesR !== undefined ? draft.otherChargesR : draft.otherCharges);
+    if (draft.otherChargesPerBag !== undefined && draft.otherChargesPerBag !== '') {
+      other = M.mul(M.toP(draft.otherChargesPerBag), totalQty);
+    }
     var grand = subtotal - itemDiscounts - invDiscount + itemTax + freight + loading + other;
     var paid  = M.toP(draft.paidAmountR !== undefined ? draft.paidAmountR : draft.paidAmount);
     return {
@@ -4474,7 +4478,7 @@ var Calc = ERP.Calc = {
       discountAmount: itemDiscounts + invDiscount, taxAmount: itemTax,
       freightAmount: freight, loadingAmount: loading, otherCharges: other,
       grandTotal: grand, paidAmount: paid, balanceAmount: grand - paid,
-      totalQty: items.reduce(function (a, i) { return a + i.quantity; }, 0),
+      totalQty: totalQty,
       lineCount: items.length
     };
   },
@@ -5249,6 +5253,7 @@ var Purchases = ERP.Purchases = {
       invoiceDiscount: M.toR(Math.max(0, (pu.discountAmount || 0) - lineDisc)),
       freight: M.toR(pu.freightAmount), loading: M.toR(pu.loadingAmount),
       otherCharges: M.toR(pu.otherCharges),
+      otherChargesPerBag: pu.totalQty ? M.toR(Math.round(pu.otherCharges / pu.totalQty)) : '',
       paidAmount: M.toR(Purchases.paidFor(pu.id)),
       items: items.map(function (it) {
         var recv = it.receivedQty === undefined ? it.quantity : it.receivedQty;
@@ -8904,7 +8909,7 @@ var MODES = {
     after: function (rec) { return ERP.DocModel.stockDoc(rec.id); }
   },
   receive: {
-    title: 'Add stock', reason: true, cost: true,
+    title: 'Add stock', reason: true, cost: true, rates: true,
     cta: 'Add to Stock', back: 'inventory', noun: 'stock receipt',
     save: function (d) { return ERP.StockDocs.receive(d); },
     after: function (rec) { return ERP.DocModel.stockDoc(rec.id); }
@@ -8946,6 +8951,7 @@ function blankDraft() {
     salesperson: global.CURRENT_USER || 'Owner',
     paymentMethod: 'Cash', notes: '',
     invoiceDiscount: 0, freight: 0, loading: 0, otherCharges: 0, paidAmount: 0,
+    otherChargesPerBag: '', sellingPrice: '', /* per-bag charges and selling price set at purchase/receive time */
     items: []
   };
 }
@@ -9222,10 +9228,17 @@ function columns() {
   var c = [{ k: 'sr', l: '#', cls: 'c' }, { k: 'prod', l: 'Product' },
            { k: 'pack', l: 'Package', cls: 'c' }, { k: 'wh', l: 'Warehouse' }];
   if (cfg.direction) c.push({ k: 'dir', l: 'In / out' });
+  /* For purchase and receive modes, label is simply "Bags" */
   c.push({ k: 'qty', l: cfg.received ? 'Ordered' : 'Qty', cls: 'r' });
   if (cfg.received) c.push({ k: 'recv', l: 'Received', cls: 'r' });
-  if (cfg.rates || cfg.cost) c.push({ k: 'rate', l: cfg.cost ? 'Cost (optional)' : 'Rate', cls: 'r' });
-  if (cfg.rates && B.mode !== 'supreturn') c.push({ k: 'disc', l: 'Discount', cls: 'r' });
+  if (cfg.rates || cfg.cost) {
+    var rateLabel = cfg.cost ? 'Purchase price / bag' : (B.mode === 'purchase' ? 'Purchase price / bag' : 'Rate');
+    c.push({ k: 'rate', l: rateLabel, cls: 'r' });
+  }
+  /* No per-item discount for purchase and receive (add stock) modes */
+  if (cfg.rates && B.mode !== 'supreturn' && B.mode !== 'purchase' && B.mode !== 'receive') {
+    c.push({ k: 'disc', l: 'Discount', cls: 'r' });
+  }
   if (cfg.rates || cfg.cost) c.push({ k: 'amt', l: 'Amount', cls: 'r' });
   c.push({ k: 'act', l: '', cls: 'c' });
   return c;
@@ -9266,10 +9279,19 @@ function lineRows() {
           '" inputmode="decimal" value="' + esc(it.quantity) + '" placeholder="0"></td>';
         case 'recv': return '<td class="r" data-label="Received"><input class="fcb-in num" data-fcline="recv" data-ix="' + ix +
           '" inputmode="decimal" value="' + esc(it.receivedQty) + '" placeholder="all"></td>';
-        case 'rate': return '<td class="r" data-label="' + (cfg.cost ? 'Cost' : 'Rate') + '"><input class="fcb-in num" data-fcline="rate" data-ix="' + ix +
-          '" inputmode="decimal" value="' + esc(it.unitPrice) + '" placeholder="0"></td>';
-        case 'disc': return '<td class="r" data-label="Discount"><input class="fcb-in num" data-fcline="disc" data-ix="' + ix +
-          '" inputmode="decimal" value="' + esc(it.discount) + '" placeholder="0"></td>';
+        case 'rate': return '<td class="r" data-label="' + (cfg.cost ? 'Cost' : 'Rate') + '">' +
+          (B.mode === 'sale' ?
+            '<div class="fcb-ro-rate" style="display:flex;align-items:center;justify-content:flex-end;gap:6px">' +
+              M.fmtPlain(calc.unitPrice) +
+              '<button type="button" class="icon-btn xs" data-fcpuredirect="' + p.id + '" title="Edit prices">✏️</button>' +
+            '</div>' :
+            '<input class="fcb-in num" data-fcline="rate" data-ix="' + ix + '" inputmode="decimal" value="' + esc(it.unitPrice) + '" placeholder="0">') +
+          '</td>';
+        case 'disc': return '<td class="r" data-label="Discount">' +
+          (B.mode === 'sale' ?
+            '<span class="fcb-ro-rate">' + M.fmtPlain(calc.discount) + '</span>' :
+            '<input class="fcb-in num" data-fcline="disc" data-ix="' + ix + '" inputmode="decimal" value="' + esc(it.discount) + '" placeholder="0">') +
+          '</td>';
         case 'amt': return '<td class="r num fcb-amtcell" data-label="Amount"><b data-fcamt="' + ix + '">' + M.fmtPlain(calc.lineTotal) + '</b></td>';
         default: return '<td class="c fcb-acts" data-label="">' +
           '<button class="icon-btn sm" data-fcmove="up" data-ix="' + ix + '" title="Move up"' +
@@ -9291,6 +9313,15 @@ function totalsBar() {
     return row('Lines', String(B.draft.items.length)) +
       row('Total bags', Number(t.totalQty).toLocaleString('en-US'), 'grand');
   }
+  /* Simplified totals for purchase and receive (add stock) modes */
+  if (B.mode === 'purchase' || B.mode === 'receive') {
+    var sp = B.draft.sellingPrice ? M.fmt(M.toP(B.draft.sellingPrice)) : '—';
+    return row('Subtotal', M.fmt(t.subtotal)) +
+      row('Extra charges', M.fmt(t.otherCharges)) +
+      row('Bags', Number(t.totalQty).toLocaleString('en-US')) +
+      row('Selling price / bag', sp) +
+      row('Grand total', M.fmt(t.grandTotal), 'grand');
+  }
   var prev = cfg.party === 'customer' && B.draft.customerId ? ERP.Ledger.customerBalance(B.draft.customerId) : 0;
   return row('Subtotal', M.fmt(t.subtotal)) +
     row('Discount', '− ' + M.fmt(t.discountAmount)) +
@@ -9302,7 +9333,12 @@ function totalsBar() {
 }
 
 function chargesBlock() {
-  if (!B.cfg.rates || B.mode === 'supreturn') {
+  if (!B.cfg.rates && !B.cfg.cost) {
+    return '<div class="card fcb-card"><div class="card-h"><h3>Notes</h3></div><div class="card-b">' +
+      '<label class="f"><span>Notes</span><textarea data-fcb="notes" rows="2" placeholder="Optional">' +
+      esc(B.draft.notes || '') + '</textarea></label></div></div>';
+  }
+  if (B.mode === 'supreturn') {
     return '<div class="card fcb-card"><div class="card-h"><h3>Notes</h3></div><div class="card-b">' +
       '<label class="f"><span>Notes</span><textarea data-fcb="notes" rows="2" placeholder="Optional">' +
       esc(B.draft.notes || '') + '</textarea></label></div></div>';
@@ -9313,27 +9349,54 @@ function chargesBlock() {
       '" inputmode="decimal" value="' + esc(B.draft[key] || '') + '" placeholder="0">' +
       (hint ? '<span class="hint">' + hint + '</span>' : '') + '</label>';
   };
+  var fText = function (key, label, hint, placeholder) {
+    return '<label class="f"><span>' + label + '</span><input data-fcb="' + key +
+      '" value="' + esc(B.draft[key] || '') + '"' + (placeholder ? ' placeholder="' + placeholder + '"' : '') + '>' +
+      (hint ? '<span class="hint">' + hint + '</span>' : '') + '</label>';
+  };
+
+  /* ── Simplified "charges & payment" for purchase and add-stock modes ── */
+  if (B.mode === 'purchase' || B.mode === 'receive') {
+    var sellHint = 'Sets the default selling price on new invoices for this product';
+    return '<div class="card fcb-card"><div class="card-h"><h3>Charges &amp; pricing</h3></div><div class="card-b">' +
+      '<div class="f2">' +
+        f('otherChargesPerBag', 'Extra charges / bag', 'Any additional cost on top of the purchase price (loading, transport, etc.)') +
+        f('sellingPrice', 'Selling price / bag', sellHint) +
+      '</div>' +
+      (B.mode === 'purchase' ?
+        '<div class="f2 fc-amtpaid">' + f('paidAmount', 'Amount paid',
+            B.editingId ? 'What has been paid so far. Raising it records a new payment voucher.' : 'Leave at 0 to pay later.') +
+          '<label class="f"><span>Payment method</span><select data-fcb="paymentMethod">' +
+            ERP.ENUM.methods.map(function (m) {
+              return '<option' + (B.draft.paymentMethod === m ? ' selected' : '') + '>' + m + '</option>';
+            }).join('') + '</select></label></div>' +
+          fText('referenceNo', 'Reference / bilty no.', '', 'Cheque / transaction / bilty number') : '') +
+      '<label class="f"><span>Internal note</span><textarea data-fcb="notes" rows="2" ' +
+        'placeholder="Optional">' + esc(B.draft.notes || '') + '</textarea></label>' +
+      '<div class="fcb-check">' + (t.grandTotal ? 'Purchase total ' + M.fmt(t.grandTotal) +
+        (B.draft.sellingPrice ? ' · Selling price ' + M.fmt(M.toP(B.draft.sellingPrice)) + ' / bag' : '') :
+        'Add a line to see the totals.') +
+      '</div></div></div>';
+  }
+
   var isSaleSide = B.cfg.party === 'customer';
   var quoteLike = B.mode === 'order' || B.mode === 'quotation';
   return '<div class="card fcb-card"><div class="card-h"><h3>Charges' +
       (quoteLike ? '' : ' &amp; payment') + '</h3></div><div class="card-b">' +
-    '<div class="f2">' + f('invoiceDiscount', 'Overall discount') + f('freight', 'Delivery / freight') + '</div>' +
-    '<div class="f2">' + f('loading', 'Loading / unloading') + f('otherCharges', 'Other charges') + '</div>' +
+    (B.mode === 'sale' ? '' :
+      '<div class="f2">' + f('invoiceDiscount', 'Overall discount') + f('freight', 'Delivery / freight') + '</div>' +
+      '<div class="f2">' + f('loading', 'Loading / unloading') + f('otherCharges', 'Other charges') + '</div>'
+    ) +
     (quoteLike ? '' :
       '<div class="f2 fc-amtpaid">' + f('paidAmount', 'Amount Paid',
           isSaleSide ? 'Leave at 0 for a credit sale'
-            : (B.mode === 'purchase' && B.editingId
-                ? 'What has been paid with this purchase so far. Raising it records another payment voucher for ' +
-                  'the difference; to lower it, reverse the voucher from Payments.' : '')) +
+            : '') +
         '<label class="f"><span>Payment method</span><select data-fcb="paymentMethod">' +
           ERP.ENUM.methods.map(function (m) {
             return '<option' + (B.draft.paymentMethod === m ? ' selected' : '') + '>' + m + '</option>';
           }).join('') + '</select></label></div>' +
       '<label class="f"><span>Reference number</span><input data-fcb="referenceNo" class="mono" value="' +
         esc(B.draft.referenceNo || '') + '" placeholder="Cheque / transaction / bilty number"></label>') +
-    /* the ledger-facing line — shown on the statement. Separate from Notes,
-       which stays an internal remark. Left blank, the statement generates a
-       sensible default instead. */
     '<label class="f fc-desc"><span>Description / تفصیل</span><input data-fcb="description" ' +
       'maxlength="500" value="' + esc(B.draft.description || '') + '" ' +
       'placeholder="Appears on the account statement — English or Urdu"></label>' +
@@ -9490,6 +9553,12 @@ B.save = function (asDraft) {
   setSaving(true, asDraft ? 'Saving draft…' : 'Saving…');
   var cfg = B.cfg, mode = B.mode, orderId = B.draft.saleOrderId, wasEdit = !!B.editingId;
 
+  /* Snapshot selling-price intent before the draft is cleared */
+  var pendingSP = B.draft.sellingPrice ? String(B.draft.sellingPrice).replace(/[^0-9.]/g, '') : '';
+  var pendingPids = (B.draft.items || [])
+    .map(function (it) { return it.productId; })
+    .filter(function (id, i, a) { return id && a.indexOf(id) === i; });
+
   cfg.save(B.draft, asDraft).then(function (rec) {
     setSaving(false); B.dirty = false;
     var no = rec.invoiceNumber || rec.purchaseNumber || rec.orderNumber ||
@@ -9498,6 +9567,25 @@ B.save = function (asDraft) {
         : cfg.title.replace(/^New /, '') + ' saved' + (no ? ' — ' + no : '') + '.');
     if (mode === 'sale' && orderId) ERP.Orders.markInvoiced(orderId, rec);
     ERP.Notify.fire(mode === 'sale' ? 'INVOICE_CREATED' : 'TRANSACTION_SAVED', { id: rec.id, ref: no });
+
+    /* ── Persist selling price to each product in the transaction ── */
+    if (!asDraft && pendingSP && (mode === 'purchase' || mode === 'receive')) {
+      var spNum = Number(pendingSP);
+      if (spNum > 0) {
+        pendingPids.forEach(function (pid) {
+          var p = global.prodOf ? global.prodOf(pid) : null;
+          if (!p) return;
+          if (ERP.Prices && ERP.Prices.set) {
+            ERP.Prices.set(pid, { sell: String(spNum) }, { reason: 'Set at ' + (mode === 'purchase' ? 'purchase' : 'stock receipt') })
+              .catch(function () { if (p) { p.sell = spNum; } });
+          } else {
+            p.sell = spNum;
+            if (global.Money) p.sellP = global.Money.toP(spNum);
+          }
+        });
+      }
+    }
+
     B.draft = null;
     global.go(cfg.back);
     if (!asDraft && cfg.after) {
@@ -10852,6 +10940,23 @@ D.addEventListener('click', function (e) {
   var add = h('[data-fcbadd]');
   if (add) { e.preventDefault(); ERP.BuilderUI.addLine(add.dataset.fcbadd); return; }
 
+  var pup = h('[data-fcpuredirect]');
+  if (pup) {
+    e.preventDefault();
+    if (B.dirty && !global.confirm('You have unsaved changes in this sale. Leave and discard them to edit the purchase?')) return;
+    var pid = pup.dataset.fcpuredirect;
+    var pit = (ERP.S.purchaseItems || []).slice().reverse().filter(function (it) { return it.productId === pid; })[0];
+    if (pit && pit.purchaseId) {
+      var pu = ERP.Purchases.byId(pit.purchaseId);
+      if (pu) {
+        ERP.Builder.start('purchase', ERP.Purchases.toDraft(pu));
+        return;
+      }
+    }
+    say('No purchase found for this product yet.');
+    return;
+  }
+
   /* line controls */
   var del = h('[data-fcdel]');
   if (del) {
@@ -10927,7 +11032,7 @@ D.addEventListener('input', function (e) {
   }
   if (el.dataset.fcb && B.draft) {
     var key = el.dataset.fcb;
-    if (['invoiceDiscount', 'freight', 'loading', 'otherCharges', 'paidAmount'].indexOf(key) > -1) {
+    if (['invoiceDiscount', 'freight', 'loading', 'otherCharges', 'otherChargesPerBag', 'paidAmount', 'sellingPrice'].indexOf(key) > -1) {
       B.draft[key] = el.value; B.dirty = true; ERP.BuilderUI.refreshTotals(); return;
     }
     if (['notes', 'description', 'referenceNo', 'orderNumber', 'dispatchNumber', 'salesperson',
@@ -19005,6 +19110,71 @@ global.PANELS.prices = {
   }
 };
 
+/* ── Simplified price editor: buy, sell, extra charges only ── */
+var SIMPLEPRICE_FOR = null;
+ERP.openSimplePriceEditor = function (productId) {
+  SIMPLEPRICE_FOR = productId;
+  global.openPanel('simpleprice');
+};
+
+global.PANELS.simpleprice = {
+  t: 'Product prices', s: 'Purchase price, selling price and extra charges per bag', cta: 'Save prices',
+  f: function () {
+    var pid = SIMPLEPRICE_FOR || ((global.PRODUCTS || [])[0] || {}).id;
+    var p = global.prodOf ? global.prodOf(pid) : null;
+    if (!p) return '<p class="hint">Product not found.</p>';
+    var info = (Prices && Prices.of) ? Prices.of(pid) : null;
+    var buyVal = info ? M.toR(info.buy) : (p.buy || '');
+    var sellVal = info ? M.toR(info.sell) : (p.sell || '');
+    var mkField = function (k, label, val, hint) {
+      return '<label class="f"><span>' + label + '</span><input data-f="' + k +
+        '" inputmode="decimal" value="' + esc(val) + '">' +
+        (hint ? '<span class="hint">' + hint + '</span>' : '') + '</label>';
+    };
+    var ctx = (info && info.averageCost) ? ('<div class="banner info">' + I('tag') +
+      '<div><p><b>' + u(p.ur || '') + ' ' + esc(p.en || '') + '</b></p>' +
+      '<p>Average cost <b>' + M.fmt(info.averageCost) + '</b>' +
+      (info.lastSupplier ? ' · last bought from <b>' + esc(info.lastSupplier) + '</b> at ' + M.fmt(info.lastCost) : '') +
+      '</p></div></div>') : '';
+    return ctx +
+      '<div class="f2">' +
+        mkField('buy', 'Purchase price / bag', buyVal, 'What a bag costs from the mill') +
+        mkField('sell', 'Selling price / bag', sellVal, 'Default rate on new invoices for this product') +
+      '</div>' +
+      mkField('otherCosts', 'Extra charges to spread', '', 'Optional — any loading/transport to add to the cost basis') +
+      '<label class="f"><span>Reason for change</span><input data-f="reason" placeholder="e.g. Market price increase"></label>';
+  },
+  save: function (v) {
+    var pid = SIMPLEPRICE_FOR;
+    var values = {};
+    if (v.buy !== undefined && v.buy !== '') values.buy = v.buy;
+    if (v.sell !== undefined && v.sell !== '') values.sell = v.sell;
+    if (!Object.keys(values).length) return 'Enter at least one price to save.';
+    if (Prices && Prices.set) {
+      var pre = Prices.validate(pid, values);
+      if (pre.errors && pre.errors.length) return pre.errors[0];
+      Prices.set(pid, values, { reason: v.reason || 'Direct price edit' }).then(function (r) {
+        global.paint();
+        if (r.unchanged) { say('Those are the prices already — nothing changed.'); return; }
+        if (r.pending) { say('Sent for approval — ' + r.changes.length + ' change(s) waiting.'); return; }
+        say(r.changes.length + ' price' + (r.changes.length === 1 ? '' : 's') + ' updated.');
+      }).catch(function (e) {
+        say(e && e.validation ? e.validation[0] : 'The prices could not be saved.');
+      });
+      return { msg: 'Saving prices…' };
+    }
+    /* Fallback: write directly when price module not available */
+    var p = global.prodOf ? global.prodOf(pid) : null;
+    if (!p) return 'Product not found.';
+    var spNum = v.sell ? Number(String(v.sell).replace(/[^0-9.]/g, '')) : null;
+    var bpNum = v.buy  ? Number(String(v.buy).replace(/[^0-9.]/g, ''))  : null;
+    if (spNum > 0) { p.sell = spNum; if (global.Money) p.sellP = global.Money.toP(spNum); }
+    if (bpNum > 0) { p.buy  = bpNum; if (global.Money) p.buyP  = global.Money.toP(bpNum); }
+    global.paint();
+    return { msg: 'Prices saved.' };
+  }
+};
+
 /* a way in from everywhere the brief asks for */
 (function addPriceButtons() {
   var wrapPage = function (name, marker) {
@@ -19400,7 +19570,10 @@ D.addEventListener('click', function (e) {
     return;
   }
   if ((t = e.target.closest('[data-editprices]'))) {
-    e.preventDefault(); ERP.openPriceEditor(t.dataset.editprices); return;
+    e.preventDefault();
+    /* Open the simplified price panel (buy price, selling price, extra charges) */
+    ERP.openSimplePriceEditor(t.dataset.editprices);
+    return;
   }
 }, true);
 
