@@ -562,6 +562,35 @@ function costPerBagHtml() {
   return I('wallet') + '<div>' + rows + '</div>';
 }
 
+/* ── Live cost-per-bag display for the purchase screen ── */
+function costPerBagHtml() {
+  var t = totals();
+  var d = B.draft;
+  var totalQty = t.totalQty || 0;
+  if (!totalQty || !t.lineCount) {
+    return '<span class="hint">Add a product to see what each bag will really cost you.</span>';
+  }
+  var disc    = M.toP(d.invoiceDiscount || 0);
+  var charges = M.toP(d.freight || 0) + M.toP(d.loading || 0) + M.toP(d.otherCharges || 0);
+  var lineCost   = t.subtotal - t.itemDiscounts;          /* paise */
+  var goodsTotal = lineCost - disc;                       /* paise */
+  var goodsCpb   = totalQty ? Math.round(goodsTotal / totalQty) : 0;
+  var chargeCpb  = totalQty ? Math.round(charges   / totalQty) : 0;
+  var landedCpb  = goodsCpb + chargeCpb;
+  var parts = [];
+  parts.push('<b>each bag costs</b> ' + M.fmt(landedCpb));
+  if (disc) {
+    var discCpb = totalQty ? Math.round(disc / totalQty) : 0;
+    parts.push('purchase price ' + M.fmt(Math.round(lineCost / totalQty)) +
+      ' &minus; discount ' + M.fmt(discCpb) + ' = <b>' + M.fmt(goodsCpb) + '</b> after discounts');
+  }
+  if (charges) {
+    parts.push('+ charges ' + M.fmt(chargeCpb) +
+      ' (' + M.fmt(charges) + ' &divide; ' + Number(totalQty).toLocaleString('en-US') + ' bags)');
+  }
+  return parts.join(' &nbsp;·&nbsp; ');
+}
+
 function chargesBlock() {
   if (!B.cfg.rates && !B.cfg.cost) {
     return '<div class="card fcb-card"><div class="card-h"><h3>Notes</h3></div><div class="card-b">' +
@@ -586,26 +615,53 @@ function chargesBlock() {
       (hint ? '<span class="hint">' + hint + '</span>' : '') + '</label>';
   };
 
-  /* ── Simplified "Charges & pricing" for purchase and add-stock modes ── */
-  if (B.mode === 'purchase' || B.mode === 'receive') {
-    var sellHint = 'Sets the default selling price on new invoices for this product';
-    return '<div class="card fcb-card"><div class="card-h"><h3>Charges &amp; pricing</h3></div><div class="card-b">' +
+  /* ── Add-stock (receive) mode: minimal — no supplier charges ── */
+  if (B.mode === 'receive') {
+    var sellHintR = 'Sets the default selling price on new invoices for this product';
+    return '<div class="card fcb-card"><div class="card-h"><h3>Pricing</h3></div><div class="card-b">' +
       '<div class="f2">' +
         f('otherChargesPerBag', 'Extra charges / bag', 'Any additional cost on top of the purchase price (loading, transport, etc.)') +
-        f('sellingPrice', 'Selling price / bag', sellHint) +
+        f('sellingPrice', 'Selling price / bag', sellHintR) +
       '</div>' +
-      (B.mode === 'purchase' ?
-        '<div class="f2 fc-amtpaid">' + f('paidAmount', 'Amount paid',
-            B.editingId ? 'What has been paid so far. Raising it records a new payment voucher.' : 'Leave at 0 to pay later.') +
-          '<label class="f"><span>Payment method</span><select data-fcb="paymentMethod">' +
-            ERP.ENUM.methods.map(function (m) {
-              return '<option' + (B.draft.paymentMethod === m ? ' selected' : '') + '>' + m + '</option>';
-            }).join('') + '</select></label></div>' +
-          fText('referenceNo', 'Reference / bilty no.', '', 'Cheque / transaction / bilty number') : '') +
       '<label class="f"><span>Internal note</span><textarea data-fcb="notes" rows="2" ' +
         'placeholder="Optional">' + esc(B.draft.notes || '') + '</textarea></label>' +
-      '<div class="fcb-check">' + (t.grandTotal ? 'Purchase total ' + M.fmt(t.grandTotal) +
-        (B.draft.sellingPrice ? ' · Selling price ' + M.fmt(M.toP(B.draft.sellingPrice)) + ' / bag' : '') :
+      '<div class="fcb-check">' + (t.grandTotal ? 'Stock total ' + M.fmt(t.grandTotal) :
+        'Add a line to see the totals.') +
+      '</div></div></div>';
+  }
+
+  /* ── Full purchase screen with per-field "i" explanations ── */
+  if (B.mode === 'purchase') {
+    var ip = ERP.info ? ERP.info.pair.bind(ERP.info) : function () { return { btn: '', box: '' }; };
+    var hRate   = ip('<b>Rate</b> = the price of ONE bag from the supplier. The system multiplies it by the quantity to get the line total.', 'What is Rate?');
+    var hDisc   = ip('Line <b>Discount</b> = money off <em>that whole line</em> (not per bag). It lowers the bill AND lowers the recorded cost of each bag on that line.', 'What is line Discount?');
+    var hODisc  = ip('<b>Overall discount</b> = money off the whole purchase, shared across all bags by value. It lowers the bill AND lowers what each bag really cost you. NOT per bag.', 'What is Overall discount?');
+    var hFreight= ip('<b>Delivery / freight</b> = the total transport cost for this purchase (e.g. truck hire). It is spread over all the bags by value and added to the cost of each one. NOT per bag.', 'What is Delivery?');
+    var hLoad   = ip('<b>Loading / unloading</b> = the total labour cost for loading or unloading this truck. Spread over all the bags by value. NOT per bag.', 'What is Loading?');
+    var hOther  = ip('<b>Extra charges</b> = any other cost on this purchase (handling, taxes, etc.). Spread over all bags by value. NOT per bag.<br><em>Paid a truck or labour separately?</em> Use <b>Extra cost per bag</b> on the product\'s Prices screen instead — it never double-counts.', 'What are Extra charges?');
+    var hPaid   = ip('<b>Amount paid</b> = what you hand the supplier now for the whole purchase. Leave at 0 to pay later. Raising it records a new payment voucher.', 'What is Amount paid?');
+    var hGuide  = ip('<b>Rate</b> = the price of ONE bag · <b>Line Discount</b> = money off that whole line (not per bag) · <b>Overall discount</b> = money off the whole purchase · <b>Delivery / Loading / Extra charges</b> = totals for the whole purchase, spread over the bags · <b>Amount paid</b> = what you hand the supplier now for the whole purchase.', 'How a purchase is worked out');
+    return '<div class="card fcb-card"><div class="card-h"><h3>Charges &amp; payment' + hGuide.btn + '</h3></div><div class="card-b">' +
+      hGuide.box +
+      '<div class="f2">' +
+        f('invoiceDiscount', 'Overall discount' + hODisc.btn, null) + hODisc.box +
+        f('freight', 'Delivery / freight' + hFreight.btn, null) + hFreight.box +
+      '</div>' +
+      '<div class="f2">' +
+        f('loading', 'Loading / unloading' + hLoad.btn, null) + hLoad.box +
+        f('otherCharges', 'Extra charges' + hOther.btn, null) + hOther.box +
+      '</div>' +
+      '<div id="fcbCpb" class="fcb-cpb hint">' + costPerBagHtml() + '</div>' +
+      '<div class="f2 fc-amtpaid">' +
+        f('paidAmount', 'Amount paid' + hPaid.btn, null) + hPaid.box +
+        '<label class="f"><span>Payment method</span><select data-fcb="paymentMethod">' +
+          ERP.ENUM.methods.map(function (m) {
+            return '<option' + (B.draft.paymentMethod === m ? ' selected' : '') + '>' + m + '</option>';
+          }).join('') + '</select></label></div>' +
+      fText('referenceNo', 'Reference / bilty no.', '', 'Cheque / transaction / bilty number') +
+      '<label class="f"><span>Internal note</span><textarea data-fcb="notes" rows="2" ' +
+        'placeholder="Optional">' + esc(B.draft.notes || '') + '</textarea></label>' +
+      '<div class="fcb-check">' + (t.grandTotal ? 'Purchase total ' + M.fmt(t.grandTotal) :
         'Add a line to see the totals.') +
       '</div></div></div>';
   }
