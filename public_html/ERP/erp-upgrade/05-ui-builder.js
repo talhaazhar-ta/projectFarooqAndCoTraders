@@ -485,8 +485,9 @@ function lineRows() {
           '" inputmode="decimal" value="' + esc(it.receivedQty) + '" placeholder="all"></td>';
         case 'rate': {
           if (B.mode === 'sale') {
-            return '<td class="r" data-label="Rate"><span class="num" style="padding:0 4px">' + M.fmtPlain(M.toP(it.unitPrice)) +
-              '</span><button class="icon-btn sm" title="Change price — edit the purchase" data-fcpuredirect="' + esc(it.productId || '') + '">✏️</button></td>';
+            return '<td class="r" data-label="Rate"><input class="fcb-in num" data-fcline="rate" data-ix="' + ix +
+              '" readonly value="' + esc(it.unitPrice) + '" style="background:none;border:none;color:inherit;cursor:default;pointer-events:none">' +
+              '<button class="icon-btn sm" title="Change price — edit the purchase" data-fcpuredirect="' + esc(it.productId || '') + '">✏️</button></td>';
           }
           return '<td class="r" data-label="' + (cfg.cost ? 'Cost' : 'Rate') + '"><input class="fcb-in num" data-fcline="rate" data-ix="' + ix +
             '" inputmode="decimal" value="' + esc(it.unitPrice) + '" placeholder="0"></td>';
