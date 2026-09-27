@@ -83,7 +83,9 @@ const run = async () => {
   /* ── stock, then a real multi-line invoice on the phone ── */
   const wh = win.WAREHOUSES[1].id;
   const prods = win.PRODUCTS.filter(p => p.active !== false).slice(0, 4);
-  if (win.ERP.Prices) prods.forEach(p => win.ERP.Prices.set(p.id, 2000, 3000));
+  if (win.ERP.Prices) {
+    for (const p of prods) await win.ERP.Prices.set(p.id, { buy: '2000', sell: '3000' }, { reason: 'test' }).catch(()=>{ p.sell = 3000; });
+  }
   await ERP.Purchases.save({
     supplierId: win.SUPPLIERS[0].id, warehouseId: wh,
     items: prods.map(p => ({ productId: p.id, quantity: 300, unitPrice: 2000 }))
