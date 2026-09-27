@@ -60,6 +60,7 @@ const run = async () => {
   /* stock to sell */
   const wh = win.WAREHOUSES[1].id;
   const prods = win.PRODUCTS.filter(p => p.active !== false).slice(0, 8);
+  prods.forEach((p, i) => p.sellingPrice = 3000 + i * 100);
   await ERP.Purchases.save({
     supplierId: win.SUPPLIERS[0].id, warehouseId: wh,
     items: prods.map(p => ({ productId: p.id, quantity: 500, unitPrice: 2000 }))
@@ -130,9 +131,9 @@ const run = async () => {
   check('UI11 five distinct products',
         new Set(win.ERP.Builder.draft.items.map(i => i.productId)).size === 5);
 
-  /* ── type quantities and rates ── */
+  /* ── type quantities ── */
   $$('[data-fcline="qty"]').forEach((el, i) => type(el, String(10 + i)));
-  $$('[data-fcline="rate"]').forEach((el, i) => type(el, String(3000 + i * 100)));
+  // Removed rate typing: rate is read-only for Sales and prefilled from sellingPrice
   await sleep(60);
   const expected = [0, 1, 2, 3, 4].reduce((a, i) => a + (10 + i) * (3000 + i * 100), 0);
   const firstQty = $$('[data-fcline="qty"]')[0];

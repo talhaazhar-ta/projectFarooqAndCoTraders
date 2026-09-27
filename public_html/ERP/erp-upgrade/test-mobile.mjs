@@ -83,6 +83,7 @@ const run = async () => {
   /* ── stock, then a real multi-line invoice on the phone ── */
   const wh = win.WAREHOUSES[1].id;
   const prods = win.PRODUCTS.filter(p => p.active !== false).slice(0, 4);
+  prods.forEach(p => p.sellingPrice = 3000);
   await ERP.Purchases.save({
     supplierId: win.SUPPLIERS[0].id, warehouseId: wh,
     items: prods.map(p => ({ productId: p.id, quantity: 300, unitPrice: 2000 }))
@@ -117,7 +118,7 @@ const run = async () => {
         $('[data-fcline="qty"]').getAttribute('inputmode') === 'decimal');
 
   $$('[data-fcline="qty"]').forEach((el, i) => type(el, String(10 + i)));
-  $$('[data-fcline="rate"]').forEach(el => type(el, '3000'));
+  // Removed rate typing: rate is read-only for Sales and prefilled from sellingPrice
   await sleep(80);
   check('M16 the running total is in the action bar',
         $('.fcb-stotals').textContent.includes('Grand total'));
