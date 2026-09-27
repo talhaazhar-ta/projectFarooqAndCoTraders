@@ -553,7 +553,15 @@ function costPerBagHtml() {
     var a = alloc[ix], p = global.prodOf(i.productId) || {};
     var perBagCharge = a.qty ? Math.round(a.share / a.qty) : 0;
     return '<p class="pz-inline"><b>' + esc(p.en || p.ur || i.productId) + '</b>: each bag costs <b>' + M.fmt(a.landedUnit) + '</b>' +
-      ' (supplfunction chargesBlock() {
+      ' (supplier price ' + M.fmt(i.unitPrice) +
+      (a.goodsUnit !== i.unitPrice ? ' → ' + M.fmt(a.goodsUnit) + ' after discounts' : '') +
+      (perBagCharge ? ' + charges ' + M.fmt(perBagCharge) +
+        (lines.length === 1 ? ' (' + M.fmt(charges) + ' ÷ ' + Number(a.qty).toLocaleString('en-US') + ' bags)' : '') : '') + ')</p>';
+  }).join('');
+  return I('wallet') + '<div>' + rows + '</div>';
+}
+
+function chargesBlock() {
   if (!B.cfg.rates && !B.cfg.cost) {
     return '<div class="card fcb-card"><div class="card-h"><h3>Notes</h3></div><div class="card-b">' +
       '<label class="f"><span>Notes</span><textarea data-fcb="notes" rows="2" placeholder="Optional">' +
