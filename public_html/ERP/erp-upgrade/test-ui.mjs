@@ -60,7 +60,7 @@ const run = async () => {
   /* stock to sell */
   const wh = win.WAREHOUSES[1].id;
   const prods = win.PRODUCTS.filter(p => p.active !== false).slice(0, 8);
-  prods.forEach((p, i) => p.sellingPrice = 3000 + i * 100);
+  if (win.ERP.Prices) prods.forEach((p, i) => win.ERP.Prices.set(p.id, 2000, 3000 + i * 100));
   await ERP.Purchases.save({
     supplierId: win.SUPPLIERS[0].id, warehouseId: wh,
     items: prods.map(p => ({ productId: p.id, quantity: 500, unitPrice: 2000 }))
