@@ -273,3 +273,4 @@ Tell the user when a change belongs to this list.
 - `docs/MYSQL_MIGRATION_PLAN.md` — design record of the IndexedDB → MySQL migration.
 - `scripts/deploy-erp.sh`, `scripts/deploy-api.sh`, `scripts/gate-rollout.sh`, `scripts/data-backend.sh` — the operational scripts.
 - `public_html/ERP/README.md`, `public_html/ERP/database/SCHEMA.md`, `public_html/ERP/docs/FINAL_ERP_REPORT.md` — the ERP itself.
+25. **Sales Invoice Price Lock** (2026-09-27): Sales invoice prices (rate, discount, extra charges) are strictly read-only at the POS. To change a selling price or cost, the user must edit the source Purchase. Editing a Purchase from a Sale warns before dropping the unsaved Sale draft to prevent data loss.
