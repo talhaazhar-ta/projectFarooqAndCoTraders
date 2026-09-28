@@ -271,7 +271,10 @@ var Master = ERP.MasterEdit = {
     });
   },
 
-  /* a percentage or fixed move on many prices at once */
+  /* a percentage or fixed move on many prices at once. 'buy'/'extra' here go through Prices.set, which only
+     ever touches the PRODUCT's own reference figure (never a warehouse row that already has its own blended
+     average — Prices.set pins those) — unlike the old product Prices-screen revalue, this was already safe
+     and stays available. A bulk 'sell' change still respects the same floor the Prices screen enforces. */
   bulkPrice: function (ids, spec, reason) {
     if (!ids || !ids.length) return Promise.reject({ validation: ['Pick some products first.'] });
     if (!reason) return Promise.reject({ validation: ['Give a reason for the price change.'] });
@@ -290,6 +293,12 @@ var Master = ERP.MasterEdit = {
       else next = Math.round(current * (1 + amount / 100));
       if (next < 0) next = 0;
       if (next === current) return;
+      /* the same floor the product Prices screen enforces — a bulk change cannot push a selling price
+         under what a bag actually costs (Inventory.averages), hard block, no override */
+      if (field === 'sell') {
+        var avg = ERP.Inventory.averages(id), floorP = avg.cost + avg.extra;
+        if (next > 0 && next < floorP) return;
+      }
       preview.push({ id: id, name: info.product.en || info.product.ur, from: current, to: next });
       var patch = {}; patch[field] = M.toR(next);
       jobs.push({ id: id, patch: patch });
@@ -319,10 +328,16 @@ var Master = ERP.MasterEdit = {
       var info = ERP.Prices.of(id);
       if (!info) return null;
       var current = info[field] || 0;
-      var next = mode === 'set' ? M.toP(amount)
+      var next = Math.max(0, mode === 'set' ? M.toP(amount)
                : mode === 'fixed' ? current + M.toP(amount)
-               : Math.round(current * (1 + amount / 100));
-      return { id: id, name: info.product.en || info.product.ur, from: current, to: Math.max(0, next) };
+               : Math.round(current * (1 + amount / 100)));
+      /* matches the hard floor bulkPrice() applies for 'sell' — the preview must not promise a change that
+         Save will then silently skip */
+      if (field === 'sell' && next > 0) {
+        var avg = ERP.Inventory.averages(id);
+        if (next < avg.cost + avg.extra) return null;
+      }
+      return { id: id, name: info.product.en || info.product.ur, from: current, to: next };
     }).filter(Boolean);
   }
 };

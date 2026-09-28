@@ -65,6 +65,7 @@ table.fcb-table tr.over td{background:var(--clay-50)}
 .fcb-mini.fcb-to{max-width:230px}
 .fcb-avail{font-size:11.5px;color:var(--muted);margin-top:2px}
 .fcb-avail.bad{color:var(--clay);font-weight:600}
+.fcb-costline.bad{color:var(--clay);font-weight:600}
 .fcb-chk{display:block;font-size:11.5px;color:var(--muted);margin-top:3px}
 .fcb-chk input{margin-right:4px}
 .fcb-fallback{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
@@ -1176,8 +1177,8 @@ D.addEventListener('change', function (e) {
     if (key === 'warehouseId') {
       B.draft.items.forEach(function (it) {
         it.warehouseId = el.value;
-        /* the read-only sale rate is averaged per warehouse (§26) — moving the whole sale to another
-           warehouse must re-read it there, not keep the old one on screen */
+        /* the read-only sale rate is one figure per product (§27, 2026-09-28) — re-read on a warehouse change
+           anyway, in case the line had no price yet and the product has one now */
         if (B.mode === 'sale') {
           var r = ERP.Inventory.sellOf(it.productId, el.value);
           if (r > 0) it.unitPrice = M.toR(r);
@@ -1194,6 +1195,7 @@ D.addEventListener('change', function (e) {
     var whIt = B.draft.items[+el.dataset.ix];
     whIt.warehouseId = el.value; B.dirty = true;
     if (B.mode === 'sale') {
+      /* the sale rate is one figure per product (§27) — this line's warehouse only affects its cost/extra */
       var whRate = ERP.Inventory.sellOf(whIt.productId, el.value);
       if (whRate > 0) whIt.unitPrice = M.toR(whRate);
     }

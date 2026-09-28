@@ -132,9 +132,9 @@ function blankDraft() {
     salesperson: global.CURRENT_USER || 'Owner',
     paymentMethod: 'Cash', notes: '',
     invoiceDiscount: 0, freight: 0, loading: 0, otherCharges: 0, paidAmount: 0,
-    /* §26, 2026-09-28: extra cost / selling price per bag, typed ONCE per PRODUCT on Purchases → Receive
-       stock and Inventory → Add stock — {[productId]: {extraPerBag, sellPerBag}}, both rupee strings, same
-       shape as every other money box on this screen. */
+    /* §27, 2026-09-28: extra cost per bag, typed ONCE per PRODUCT on Purchases → Receive stock and
+       Inventory → Add stock — {[productId]: {extraPerBag}}, a rupee string, same shape as every other money
+       box on this screen. Selling price is NOT typed here — only on the product's Prices screen. */
     perProduct: {},
     items: []
   };
@@ -148,15 +148,12 @@ function productsOnDraft() {
     if (!it.productId || seen[it.productId]) return;
     seen[it.productId] = true;
     var pp = B.draft.perProduct[it.productId] || (B.draft.perProduct[it.productId] = {});
-    /* an edit (toDraft carries each line's own saved extraPerBag/sellPerBag) opens with what was actually
-       saved; a brand-new line falls to the product's own current figures */
+    /* an edit (toDraft carries each line's own saved extraPerBag) opens with what was actually saved; a
+       brand-new line falls to the product's own current extra cost. No selling price here any more (2026-09-28,
+       client) — it is set only on the product's Prices screen. */
     if (pp.extraPerBag === undefined) {
       pp.extraPerBag = it.extraPerBag !== undefined && it.extraPerBag !== '' ? it.extraPerBag
         : (function () { var ex = ERP.Inventory.rawExtraOf(it.productId); return ex > 0 ? M.toR(ex) : ''; })();
-    }
-    if (pp.sellPerBag === undefined) {
-      pp.sellPerBag = it.sellPerBag !== undefined && it.sellPerBag !== '' ? it.sellPerBag
-        : (function () { var sl = ERP.Inventory.rawSellOf(it.productId); return sl > 0 ? M.toR(sl) : ''; })();
     }
     out.push({ productId: it.productId, product: global.prodOf(it.productId) || {} });
   });
@@ -204,8 +201,11 @@ function lastRate(pid) {
      sale at 6300 showed a loss. The purchase price the owner saved (else the stock's own cost) is offered
      instead; with neither, the box stays empty ("Cost (optional)"). */
   if (B.cfg.cost && !B.cfg.rates && B.cfg.party !== 'supplier') {
-    var held = ERP.Prices && ERP.Prices.of ? ERP.Prices.of(pid) : null;
-    return held && held.buy > 0 ? held.buy : null;
+    /* purchase price / extra cost are fixed to the document that typed them (2026-09-28) — the product's own
+       buyP field is no longer kept in step, so the starting figure here is the live bag-weighted average of
+       the stock actually on hand (Inventory.averages), same as the Prices screen shows */
+    var avgC = ERP.Inventory.averages(pid).cost;
+    return avgC > 0 ? avgC : null;
   }
   if (B.cfg.party === 'supplier') {
     ERP.S.purchaseItems.forEach(function (it) {
@@ -216,9 +216,9 @@ function lastRate(pid) {
     return hit ? hit.rate : null;
   }
   if (B.mode === 'sale') {
-    /* §26, 2026-09-28: the sale rate is the bag-weighted average of the stock actually on hand in this
-       line's warehouse (Purchases + Add stock) — never a one-off "last invoiced at" figure any more, since
-       the rate is now read-only and can only be changed at the source. */
+    /* §27, 2026-09-28: the sale rate is the product's OWN selling price, set only on the Prices screen —
+       never a one-off "last invoiced at" figure, and never blended per warehouse: the rate is read-only here
+       and can only be changed at the source. */
     var rate = ERP.Inventory.sellOf(pid, B.draft.warehouseId);
     return rate > 0 ? rate : null;
   }
@@ -525,10 +525,12 @@ function lineRows() {
                opens the product's Prices screen — the only place these figures change. */
             var av = { cost: ERP.Inventory.costOf(it.productId, lw), extra: ERP.Inventory.extraFor(it.productId, lw) };
             var avCost = av.cost + av.extra;
+            var noSell = !(M.toP(it.unitPrice) > 0);
             return '<td class="r" data-label="Rate"><input class="fcb-in num" data-fcline="rate" data-ix="' + ix +
               '" readonly value="' + esc(it.unitPrice) + '" style="background:none;border:none;color:inherit;cursor:default;pointer-events:none">' +
-              (avCost ? '<div class="fcb-costline hint">cost ' + M.fmtPlain(avCost) + (av.extra ? ' (' + M.fmtPlain(av.cost) + '+' + M.fmtPlain(av.extra) + ')' : '') + '</div>' : '') +
-              '<button class="icon-btn sm" title="Change purchase price, extra cost or selling price" data-fcpriceedit="' + esc(it.productId || '') + '">' + I('edit') + '</button></td>';
+              (noSell ? '<div class="fcb-costline hint bad">No selling price set — set it on the Prices screen</div>'
+                : avCost ? '<div class="fcb-costline hint">cost ' + M.fmtPlain(avCost) + (av.extra ? ' (' + M.fmtPlain(av.cost) + '+' + M.fmtPlain(av.extra) + ')' : '') + '</div>' : '') +
+              '<button class="icon-btn sm" title="Open the product\'s Prices screen" data-fcpriceedit="' + esc(it.productId || '') + '">' + I('edit') + '</button></td>';
           }
           var rateLbl = (B.mode === 'purchase' || B.mode === 'receive') ? 'Purchase price' : (cfg.cost ? 'Cost' : 'Rate');
           return '<td class="r" data-label="' + rateLbl + '"><input class="fcb-in num" data-fcline="rate" data-ix="' + ix +
@@ -629,14 +631,15 @@ function buyOf(pid) {
   totals().items.forEach(function (i) { if (i.productId === pid && i.quantity > 0) { qty += i.quantity; value += i.quantity * i.unitPrice; } });
   return qty ? Math.round(value / qty) : 0;
 }
-/* the written sum the client asked to see, beside each product's boxes: purchase + extra = cost, selling
-   price, profit/bag — kept as its own function so typing in either box can refresh JUST this line (see
-   the data-fcprod input handler in 06-wiring.js) without redrawing the whole card and losing the caret. */
+/* the written sum the client asked to see, beside each product's boxes: purchase + extra = cost — kept as its
+   own function so typing the extra-cost box can refresh JUST this line (see the data-fcprod input handler in
+   06-wiring.js) without redrawing the whole card and losing the caret. No selling price here any more
+   (2026-09-28, client) — it is set only on the product's Prices screen, never on a purchase or Add-stock line. */
 function prodPriceHeadHtml(name, buy, pp) {
-  var extra = M.toP(pp.extraPerBag || 0), sell = M.toP(pp.sellPerBag || 0), cost = buy + extra;
+  var extra = M.toP(pp.extraPerBag || 0), cost = buy + extra;
   return '<b>' + name + '</b>' +
     (buy ? '<span class="hint">purchase ' + M.fmt(buy) + (extra ? ' + extra ' + M.fmt(extra) : '') +
-      ' = cost ' + M.fmt(cost) + (sell ? ' · sell ' + M.fmt(sell) + ' · profit ' + M.fmt(sell - cost) + '/bag' : '') + '</span>' : '');
+      ' = cost ' + M.fmt(cost) + '</span>' : '');
 }
 function refreshProdPriceLine(pid) {
   var host = global.document.getElementById('fcbpph-' + pid);
@@ -646,11 +649,11 @@ function refreshProdPriceLine(pid) {
 }
 function perProductPricingBlock() {
   var products = productsOnDraft();
-  if (!products.length) return '<p class="hint">Add a product above to set its extra cost and selling price.</p>';
+  if (!products.length) return '<p class="hint">Add a product above to set its extra cost.</p>';
   var tip = ERP.info && ERP.info.pair ? ERP.info.pair(
     'What we pay ourselves on top of the purchase price — transport, labour, loading. Type 0 if none.', 'What is Extra cost?') : { btn: '', box: '' };
-  var tipSell = ERP.info && ERP.info.pair ? ERP.info.pair(
-    'The rate a new invoice for this product opens with. Must cover the purchase price plus the extra cost, or Save refuses it.', 'What is Selling price?') : { btn: '', box: '' };
+  /* no Selling price box here any more (2026-09-28, client: "how can changing the price here change every
+     already-issued receipt?") — the selling price is set once, only on the product's own Prices screen. */
   return products.map(function (x, gi) {
     var name = esc(x.product.en || x.product.ur || x.productId);
     var pp = B.draft.perProduct[x.productId] || {};
@@ -659,8 +662,7 @@ function perProductPricingBlock() {
       '<div class="f2">' +
         '<label class="f"><span>Extra cost / bag' + (gi === 0 ? tip.btn : '') + '</span><input class="num fcb-in" data-fcprod="extraPerBag" data-pid="' + esc(x.productId) +
           '" inputmode="decimal" value="' + esc(pp.extraPerBag || '') + '" placeholder="0">' + (gi === 0 ? tip.box : '') + '</label>' +
-        '<label class="f"><span>Selling price / bag' + (gi === 0 ? tipSell.btn : '') + '</span><input class="num fcb-in" data-fcprod="sellPerBag" data-pid="' + esc(x.productId) +
-          '" inputmode="decimal" value="' + esc(pp.sellPerBag || '') + '" placeholder="0">' + (gi === 0 ? tipSell.box : '') + '</label>' +
+        '<div></div>' +
       '</div></div>';
   }).join('');
 }
@@ -956,27 +958,27 @@ B.save = function (asDraft) {
   setSaving(true, asDraft ? 'Saving draft…' : 'Saving…');
   var cfg = B.cfg, mode = B.mode, orderId = B.draft.saleOrderId, wasEdit = !!B.editingId;
 
-  /* Extra cost / Selling price, typed once per PRODUCT (perProductPricingBlock), are folded onto every
-     matching line as extraPerBag/sellPerBag — Purchases.save / StockDocs.receive read them from there
-     (§26, 2026-09-28). A NEW draft object is sent to save(); B.draft itself is left untouched. */
+  /* Extra cost, typed once per PRODUCT (perProductPricingBlock), is folded onto every matching line as
+     extraPerBag — Purchases.save / StockDocs.receive read it from there (§26/§27, 2026-09-28). A NEW draft
+     object is sent to save(); B.draft itself is left untouched. No selling price here any more — it is set
+     only on the product's Prices screen, never on a purchase or Add-stock line. */
   var saveDraft = B.draft;
+  var pricedProductIds = [];
   if (mode === 'purchase' || mode === 'receive') {
     saveDraft = Object.assign({}, B.draft, {
       items: (B.draft.items || []).map(function (it) {
         var pp = B.draft.perProduct[it.productId] || {};
-        return Object.assign({}, it, { extraPerBag: pp.extraPerBag || '', sellPerBag: pp.sellPerBag || '' });
+        return Object.assign({}, it, { extraPerBag: pp.extraPerBag || '' });
       })
     });
     /* Purchase price is required at THIS screen (client — "Ordered ... compulsory ... only the purchasing
        price of each bag has to be written"); the service layer keeps it optional (falls to Inventory.costOf)
-       since it is also every test's raw data-setup path. Same for the selling-vs-cost check the server makes
-       (ERP.Validate.perProductPricing) — run here first so a bad price is refused before "Saving…" ever
-       shows (the panel-close trap, §26 note in PRICE_SCREEN.md). */
+       since it is also every test's raw data-setup path. */
     var priceErrs = [];
     (saveDraft.items || []).forEach(function (it, ix) {
       if (it.productId && !(M.toP(it.unitPrice) > 0)) priceErrs.push('Line ' + (ix + 1) + ': enter the purchase price for one bag.');
+      if (it.productId && pricedProductIds.indexOf(it.productId) === -1) pricedProductIds.push(it.productId);
     });
-    priceErrs = priceErrs.concat(ERP.Validate.perProductPricing((saveDraft.items || []).filter(function (i) { return i.productId; })));
     if (priceErrs.length) { setSaving(false); showErrors(priceErrs); return; }
   }
 
@@ -984,9 +986,23 @@ B.save = function (asDraft) {
     setSaving(false); B.dirty = false;
     var no = rec.invoiceNumber || rec.purchaseNumber || rec.orderNumber ||
              rec.docNumber || rec.returnNumber || '';
-    say(mode === 'purchase' && wasEdit ? 'Purchase ' + no + ' updated — stock and the supplier balance follow the change.'
+    /* warn, never block (2026-09-28 decision): a dearer purchase/receipt can push the average cost above a
+       selling price already set on the Prices screen. The purchase/receipt still saves — a supplier's bill
+       is a fact — this just nudges the owner to reprice. */
+    var priceWarn = '';
+    if (mode === 'purchase' || mode === 'receive') {
+      var costHigh = pricedProductIds.filter(function (pid) {
+        var avg = ERP.Inventory.averages(pid), sell = ERP.Inventory.rawSellOf(pid);
+        return sell > 0 && sell < avg.cost + avg.extra;
+      });
+      if (costHigh.length) {
+        priceWarn = ' Note: ' + costHigh.length + ' product' + (costHigh.length === 1 ? '' : 's') +
+          ' now costs more than its selling price — set a new one on the Prices screen.';
+      }
+    }
+    say((mode === 'purchase' && wasEdit ? 'Purchase ' + no + ' updated — stock and the supplier balance follow the change.'
         : mode === 'receive' && wasEdit ? 'Stock receipt ' + no + ' updated — stock follows the change.'
-        : cfg.title.replace(/^New /, '') + ' saved' + (no ? ' — ' + no : '') + '.');
+        : cfg.title.replace(/^New /, '') + ' saved' + (no ? ' — ' + no : '') + '.') + priceWarn);
     if (mode === 'sale' && orderId) ERP.Orders.markInvoiced(orderId, rec);
     ERP.Notify.fire(mode === 'sale' ? 'INVOICE_CREATED' : 'TRANSACTION_SAVED', { id: rec.id, ref: no });
 

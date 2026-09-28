@@ -241,8 +241,8 @@ const run=async()=>{
   ERP.openPriceEditor(plain.id); await sleep(300);
   check('R40 landedAlready/landedBreakdown (the data behind the old banner) still work',
     ERP.Prices.landedAlready(plain.id)===true && ERP.Prices.landedBreakdown(plain.id).charge===M.toP(200));
-  check('R41 "Average purchase price" now shows the stock\'s own recorded cost, 6,200 (charges included)',
-    $('#panel [data-f="buy"]').value==='6200', $('#panel [data-f="buy"]').value);
+  check('R41 "Average purchase price" now shows the stock\'s own recorded cost, 6,200 (charges included), read-only',
+    $('#panel .pz-ro').textContent.trim()==='PKR 6,200', $('#panel .pz-ro').textContent.trim());
   click($('#panel [data-close]')); await sleep(120);
   /* the client's round: sold 31,500, shop paid 3,200, ALL bags returned, the 3,200 handed back through "Pay a shop" */
   const shopH=win.CUSTOMERS[12].id;

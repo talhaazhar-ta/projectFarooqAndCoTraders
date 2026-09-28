@@ -121,8 +121,8 @@ const run=async()=>{
   ERP.openPriceEditor(W.id); await sleep(300);
   check('X19 landedAlready still reports transport already carried through Landed costs',
     ERP.Prices.landedAlready(W.id)===true, String(ERP.Prices.landedAlready(W.id)));
-  check('X19b the panel still opens for that product without throwing, showing its averages',
-    !!$('#panel [data-f="buy"]') && $('#panel [data-f="buy"]').value!=='');
+  check('X19b the panel still opens for that product without throwing, showing its averages (read-only, §27)',
+    !!$('#panel .pz-ro') && $('#panel .pz-ro').textContent.trim()!=='' && $('#panel .pz-ro').textContent.trim()!=='—');
   ERP.openPriceEditor(X.id); await sleep(300);
   check('X20 no such warning for a product bought without charges', ERP.Prices.landedAlready(X.id)===false);
   await ERP.Settings.save({profitCostBasis:'PURCHASE'});

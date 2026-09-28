@@ -481,16 +481,18 @@ async function main() {
     click(w, btn(w, 'cancel')); await sleep(60);
     check('G10 cancelling it wipes nothing and leaves window.confirm as it was', w.PRODUCTS.length === nProducts && /native code/.test(Function.prototype.toString.call(w.confirm)));
 
-    /* price warning: acknowledged in the panel (a modal cannot sit inside a panel's synchronous save) */
+    /* price warning: a hard block, synchronous, no confirm-and-keep-anyway any more (§27, 2026-09-28 — the
+       client's own rule: a selling price cannot be set under what a bag costs, not even by pressing Save
+       twice). Purchase price / extra cost are no longer typed on this panel — give the product a baseline
+       cost through Prices.set first (a fresh product otherwise has none, and everything would pass). */
+    await ERP.Prices.set(prod.id, { buy: '2200', extra: '0' }, { reason: 'test baseline' }).catch(() => {});
     ERP.openPriceEditor(prod.id);
-    const v = { sell: '2100', buy: '2200', reason: 'test' };
-    const first = w.PANELS.prices.save(v);
-    check('G11 saving a selling-below-cost price is held back once, with the warning shown in the panel', typeof first === 'string' && /lose/.test(first) && /Press Save again/.test(first), String(first));
-    const second = w.PANELS.prices.save(v);
-    check('G12 saving the same figures again is the confirmation and goes through', second && typeof second === 'object' && !!second.msg, JSON.stringify(second));
-    w.PANELS.prices.save(Object.assign({}, v, { sell: '2050' }));
-    const third = w.PANELS.prices.save({ sell: '2000', buy: '2200', reason: 'test' });
-    check('G13 changing the figures asks again (the acknowledgement is only for exactly what was warned about)', typeof third === 'string');
+    const first = w.PANELS.prices.save({ sell: '2100', reason: 'test' });
+    check('G11 saving a selling-below-cost price refuses outright, in the panel', typeof first === 'string' && /below what a bag costs/i.test(first), String(first));
+    const second = w.PANELS.prices.save({ sell: '2100', reason: 'test' });
+    check('G12 pressing Save again with the same figure still refuses it — there is no override', typeof second === 'string' && /below what a bag costs/i.test(second), String(second));
+    const third = w.PANELS.prices.save({ sell: '2300', reason: 'test' });
+    check('G13 a corrected figure, above cost, saves normally', third && typeof third === 'object' && !!third.msg, JSON.stringify(third));
     await sleep(200);
 
     /* a real dropdown from the real app */

@@ -83,35 +83,41 @@ const run=async()=>{
   win.ERP.BuilderUI.addLine(P[8].id); await sleep(150);
   Bd.items[0].quantity='5'; Bd.items[0].unitPrice='6000';
   const extraBox=()=>$('[data-fcprod="extraPerBag"][data-pid="'+P[8].id+'"]');
-  const sellBox=()=>$('[data-fcprod="sellPerBag"][data-pid="'+P[8].id+'"]');
-  check('S4 the per-product Extra cost / Selling price boxes are on screen', !!extraBox() && !!sellBox());
-  type(extraBox(),'40'); type(sellBox(),'6100'); win.ERP.BuilderUI.refreshTotals();
+  check('S4 the per-product Extra cost box is on screen, with no Selling price box any more (§27, 2026-09-28)',
+    !!extraBox() && !$('[data-fcprod="sellPerBag"][data-pid="'+P[8].id+'"]'));
+  type(extraBox(),'40'); win.ERP.BuilderUI.refreshTotals();
   const prodLine=()=>D.querySelector('.fcb-prodprice').textContent.replace(/\s+/g,' ');
-  check('S5 the per-product line works out purchase + extra = cost, and the profit per bag',
-    /6,000/.test(prodLine()) && /40/.test(prodLine()) && /6,040/.test(prodLine()) && /6,100/.test(prodLine()) && /60/.test(prodLine()), prodLine());
-  type(sellBox(),'5000');
-  check('S6 a selling price below cost is refused at Save, before anything is written',
-    (click($('[data-fcbact="save"]')), /below what a bag costs/i.test($('#fcbErr').textContent)), $('#fcbErr').textContent);
-  type(sellBox(),'6100');
+  check('S5 the per-product line works out purchase + extra = cost',
+    /6,000/.test(prodLine()) && /40/.test(prodLine()) && /6,040/.test(prodLine()), prodLine());
+
+  /* selling price is no longer typed on this screen (§27, 2026-09-28) — set one directly (as the Prices
+     screen would) BELOW what this purchase is about to cost, and check the purchase still saves, warning
+     rather than refusing */
+  await ERP.Prices.setSell(P[8].id, '5000', { reason: 'test baseline' });
+  const saidMsgs=[]; win.say=m=>saidMsgs.push(m);
   const savedPu=await new Promise(res=>{
     const origSave=ERP.Purchases.save;
     ERP.Purchases.save=function(d){ ERP.Purchases.save=origSave; return origSave.call(ERP.Purchases,d).then(r=>{res(r);return r;}); };
     click($('[data-fcbact="save"]'));
   });
+  await sleep(80);   /* B.save's own .then (which shows the toast) is chained AFTER the wrapped save resolves */
+  check('S6 the purchase still saves even though 6,040 cost is now above the 5,000 selling price already set', !!savedPu);
+  check('S6b a warning nudges the owner to reprice instead of blocking the purchase',
+    saidMsgs.some(m=>/now costs more than its selling price/.test(m)), saidMsgs.join(' | '));
   const savedItem=ERP.Purchases.items(savedPu.id)[0];
-  check('S7 Save keeps the purchase price on the line (6,000) and the typed extra/sell on the line too',
-    savedItem.unitPrice===M.toP(6000) && savedItem.extraUnitP===M.toP(40) && savedItem.sellUnitP===M.toP(6100),
-    savedItem.unitPrice+' / '+savedItem.extraUnitP+' / '+savedItem.sellUnitP);
-  check('S8 the stock now averages 6,000 purchase + 40 extra = 6,040 cost, and sells at 6,100',
+  check('S7 Save keeps the purchase price on the line (6,000) and the typed extra on the line too',
+    savedItem.unitPrice===M.toP(6000) && savedItem.extraUnitP===M.toP(40),
+    savedItem.unitPrice+' / '+savedItem.extraUnitP);
+  check('S8 the stock now averages 6,000 purchase + 40 extra = 6,040 cost — the selling price is untouched at 5,000',
     ERP.Inventory.costOf(P[8].id,wh)===M.toP(6000) && ERP.Inventory.extraFor(P[8].id,wh)===M.toP(40) &&
-    ERP.Inventory.sellOf(P[8].id,wh)===M.toP(6100));
+    ERP.Inventory.sellOf(P[8].id,wh)===M.toP(5000));
 
-  /* ── the product's Prices screen: the same three averages, simplified §26 — no more per-purchase
-     "Change" buttons or the old "already carries transport" banner, but the purchase itself is listed
-     with an Edit link ── */
+  /* ── the product's Prices screen: purchase price and extra cost are now READ-ONLY text (§27, 2026-09-28) —
+     the only input left is the selling price. The purchase itself is still listed with an Edit link. ── */
   ERP.openPriceEditor(A.id); await sleep(300);
-  check('P1 "Average purchase price" reflects the stock on hand (6,040 — A\'s earlier purchase with charges)',
-    $('#panel [data-f="buy"]').value==='6040', $('#panel [data-f="buy"]').value);
+  const roVals=()=>Array.from(D.querySelectorAll('#panel .pz-ro')).map(el=>el.textContent.trim());
+  check('P1 "Average purchase price" reflects the stock on hand (6,040 — A\'s earlier purchase with charges), shown read-only',
+    roVals()[0]==='PKR 6,040' && !$('#panel [data-f="buy"]') && !$('#panel [data-f="extra"]'), roVals().join(' / '));
   type($('#panel [data-f="sell"]'),'6300');
   const rows=()=>$('#pzCalcRows').textContent.replace(/\s+/g,' ');
   check('P2 at a selling price of 6,300 it shows the profit a sale will really show: 260 a bag',

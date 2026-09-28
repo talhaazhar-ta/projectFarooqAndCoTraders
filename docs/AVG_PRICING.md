@@ -1,5 +1,9 @@
 # Simplified pricing: Purchases and Add stock, one average each (2026-09-28)
 
+> **Superseded same day by §27, "Fixed document costs, selling price only on the Prices screen" — see the
+> section at the bottom of this file.** The design below (three editable averages, `Prices.revalue`) is kept
+> for history; the live app no longer works this way for purchase price / extra cost / selling price.
+
 ## Why
 
 The client asked to simplify how a product gets its price:
@@ -99,3 +103,69 @@ line still gets today's.
   `ERP.openPurchasesFor(pid)` prefill helpers — not yet wired to any button, since the Prices screen's own
   purchases/receipts list covers the "come here to change it" flow the client asked for.
 - Not seen live — see CLAUDE.md's "Not yet seen by a person on the live site" list.
+
+## §27 — Fixed document costs, selling price only on the Prices screen (same day, 2026-09-28)
+
+### Why
+
+The client, on seeing §26 live: *"when we purchase a product with a specific purchase price and extra cost,
+how can we then change the purchase price of all purchased and Add-stock receipts just by editing the Prices
+screen?"* — a fair complaint about `Prices.revalue` above, which force-set **every warehouse row's**
+`avgCostP`/`avgExtraP` to whatever was typed, silently re-pricing bags that came in on already-issued
+purchases and receipts. Their own proposed fix, adopted as-is:
+
+1. Purchase price and extra cost are **fixed to the purchase/receipt document** that typed them — never
+   editable afterwards except by editing that document (Edit purchase / Edit stock receipt).
+2. The product Prices screen shows them as the **bag-weighted average of stock on hand**
+   (`Inventory.averages`), now **read-only text** (`.pz-ro` in `21-settings.js`), with the same worked sum
+   and purchases/receipts list (with Edit links) as before.
+3. **Selling price is removed from Purchases → Receive stock and Inventory → Add stock entirely** —
+   `perProductPricingBlock` (`05-ui-builder.js`) now has only the Extra-cost box. It is set in exactly one
+   place: the Prices screen, `Prices.setSell` (replaces `Prices.revalue`).
+4. The selling price can never be saved **below what a bag costs** (purchase + extra) — a **hard block, no
+   override**, confirmed by the user for everyone including the owner. `PRICE_WARNED` (the old "Save again to
+   keep it anyway" pattern) is gone from this panel.
+
+### What changed
+
+- **One selling price per product**, not per warehouse: `avgSellP` on inventory rows is gone.
+  `Inventory.sellOf(pid, wid)` is now a thin wrapper over `Inventory.rawSellOf(pid)` (reads `p.sellP`);
+  `Inventory.apply` no longer blends a `sellP` on any inbound/undo movement. `Inventory.averages(pid).sell`
+  is always `rawSellOf(pid)`, not an average.
+- `Inventory.averages(pid)`'s zero-stock fallback used to read only the product's own `p.buy` (which nothing
+  writes any more, since `revalue` is gone) — a product that sold all the way out would show cost "—"
+  forever. It now tries `Inventory.lastKnownCost(pid)` first: the `unitCostP` of the most recent
+  `PURCHASE_IN`/`MILL_RECEIPT_IN`/Add-stock movement for that product, in any warehouse, regardless of
+  current qty. (A stock movement record never carried `extraCostP`, only `unitCostP` — the extra side of
+  this fallback still falls to `p.extraP`, as it always did.)
+- `Prices.revalue` (three editable boxes, one combined write) is replaced by `Prices.setSell` (one input,
+  one field, checks the floor itself as well as the panel doing it synchronously). The approval queue
+  (`Prices.request`/`approve`) is unchanged plumbing, but `Prices.approve` now **re-checks the floor at
+  approval time**, not only at request time — a dearer purchase can land while a salesperson's request sits
+  waiting for the owner, and approving it anyway would have slipped a below-cost price past the rule.
+- Purchases/Add-stock's `B.save` (`05-ui-builder.js`) no longer runs `ERP.Validate.perProductPricing`
+  (deleted — its whole job was the below-cost check that used to live on these screens). After a successful
+  save it instead **warns** (`say()`, never blocks) when the receipt just pushed a product's average cost
+  above its already-set selling price: *"Note: N product(s) now cost more than their selling price — set a
+  new one on the Prices screen."*
+- The Workbench "Change many prices" bulk tool (`23-workbench.js`) still allows bulk-editing 'buy'/'extra' —
+  unlike the old Prices-screen `revalue`, `Prices.set`'s handling of those fields was **already safe**: 'buy'
+  only ever sets the product's own fallback field (never a priced warehouse row), and 'extra' **pins** any
+  row that already has its own blended `avgExtraP`, only touching rows still following the product's raw
+  figure. A bulk 'sell' change gained the same hard floor the single-product screen enforces.
+- Sale line: `05-ui-builder.js`'s rate cell now shows "No selling price set — set it on the Prices screen" in
+  red (reusing the existing `.bad` colour class) when the product has none — Save already refused a
+  zero-rate line (`Validate.invoice`'s pre-existing `rate === 0` check), this just makes the reason visible.
+
+### Not done
+
+- The general "product master data" editor (`18-master-data.js` PANELS.editproduct, "Default selling price"
+  box) still writes `p.sell` through `Master.update` with **no floor check** — a pre-existing gap (predates
+  §26/§27), left alone; in practice it only matters for a product that has never gone through
+  `Prices.setSell` (`p.sellP` unset), since `rawSellOf` prefers `p.sellP` once it exists.
+- No schema change — app-only, `deploy-erp.sh`.
+- New test file `test-price-lock.mjs`; `test-add-stock-pricing.mjs`, `test-purchase-cost.mjs`,
+  `test-extra-cost.mjs`, `test-extra-cost-profit.mjs`, `test-return-guards.mjs`, `test-ui-kit.mjs` updated to
+  match (their `data-f="buy"`/`data-f="extra"` checks, `Prices.revalue` calls and the old "warn twice" panel
+  flow no longer apply).
+- Not seen live yet.

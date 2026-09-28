@@ -252,9 +252,6 @@ var StockDocs = ERP.StockDocs = {
     if (type === 'RECEIVE' && !draft.reason) errs.push('Give a reason for adding this stock.');
     /* the purchase price is required at the SCREEN, not here — this function is also every test's
        data-setup path for "add stock", most with no price typed at all (falls back to Inventory.costOf) */
-    if (type === 'RECEIVE') {
-      errs = errs.concat(ERP.Validate.perProductPricing((draft.items || []).filter(function (l) { return l && l.productId; })));
-    }
     if (type === 'CONVERT') {
       (draft.items || []).forEach(function (l, n) {
         if (!l || !l.productId) return;
@@ -334,12 +331,12 @@ var StockDocs = ERP.StockDocs = {
               r.toBrandSnapshot = toProd.brandEn || toProd.brand || '';
               r.toPackageSnapshot = toProd.kg ? toProd.kg + ' KG' : 'Bag';
             }
-            /* Extra cost / selling price per bag, typed once per PRODUCT on the Add-stock screen (§26,
-               2026-09-28) — kept on the line (set BEFORE the put) so a later edit can see what it came in
-               at. A figure typed this time wins; blank falls to the product's own saved figure. */
+            /* Extra cost per bag, typed once per PRODUCT on the Add-stock screen (§26, 2026-09-28) — kept on
+               the line (set BEFORE the put) so a later edit can see what it came in at. A figure typed this
+               time wins; blank falls to the product's own saved figure. The selling price is NOT typed here
+               any more (2026-09-28, client): it is set only on the product's Prices screen. */
             if (type === 'RECEIVE') {
               r.extraUnitP = l.extraPerBag !== undefined && l.extraPerBag !== '' ? M.toP(l.extraPerBag) : Inventory.rawExtraOf(r.productId);
-              r.sellUnitP = l.sellPerBag !== undefined && l.sellPerBag !== '' ? M.toP(l.sellPerBag) : Inventory.rawSellOf(r.productId);
             }
             api.put('stockDocItems', r); S.stockDocItems.push(r);
             qty += q;
@@ -356,7 +353,7 @@ var StockDocs = ERP.StockDocs = {
             } else if (type === 'RECEIVE') {
               Inventory.apply(api, { productId: r.productId, warehouseId: r.warehouseId, qtyDelta: q,
                 kind: draft.opening ? 'OPENING_STOCK' : 'ADJUSTMENT_IN', ref: number, refType: 'STOCK_RECEIPT',
-                note: rec.reason, date: rec.docDate, unitCostP: r.unitCostP, extraCostP: r.extraUnitP, sellP: r.sellUnitP });
+                note: rec.reason, date: rec.docDate, unitCostP: r.unitCostP, extraCostP: r.extraUnitP });
             } else if (type === 'ADJUST') {
               Inventory.apply(api, {
                 productId: r.productId, warehouseId: r.warehouseId,
@@ -441,8 +438,7 @@ var StockDocs = ERP.StockDocs = {
           unitPrice: it.unitCostP ? M.toR(it.unitCostP) : '', discount: '', receivedQty: '',
           direction: 'IN', warehouseId: it.warehouseId || d.warehouseId, fromDamaged: false,
           toProductId: '', batchNo: it.batchNo || '', notes: it.notes || '', unit: it.unit || 'Bag',
-          extraPerBag: it.extraUnitP > 0 ? M.toR(it.extraUnitP) : '',
-          sellPerBag: it.sellUnitP > 0 ? M.toR(it.sellUnitP) : ''
+          extraPerBag: it.extraUnitP > 0 ? M.toR(it.extraUnitP) : ''
         };
       })
     };
@@ -459,7 +455,6 @@ var StockDocs = ERP.StockDocs = {
     v.lines.forEach(function (l, n) {
       if (l.unitPrice && M.toP(l.unitPrice) < 0) errs.push('Line ' + (n + 1) + ': the cost cannot be negative.');
     });
-    errs = errs.concat(ERP.Validate.perProductPricing(v.lines));
 
     var oldItems = StockDocs.items(prior.id);
     /* the stock guard is on the NET change per product and warehouse: bags this
@@ -504,20 +499,19 @@ var StockDocs = ERP.StockDocs = {
           qty: prior.totalQty, lines: oldItems.map(function (i) {
             return (i.descriptionEnSnapshot || i.productId) + ' × ' + i.quantity + (i.unitCostP ? ' @ ' + M.toR(i.unitCostP) : '');
           }) };
-        /* the extra cost / selling price per bag the old lines came in with: an edit takes exactly that back out,
+        /* the extra cost per bag the old lines came in with: an edit takes exactly that back out,
            and a line kept for the same product and warehouse goes back in with it (unless typed over below), so
            it does not re-price the bags around it */
-        var oldExtra = {}, oldSell = {}, exKey = function (pid, wid) { return pid + '|' + wid; };
+        var oldExtra = {}, exKey = function (pid, wid) { return pid + '|' + wid; };
         oldItems.forEach(function (o) {
           var w = o.warehouseId || prior.warehouseId;
           var ex = typeof o.extraUnitP === 'number' ? o.extraUnitP : Inventory.rowExtraP(o.productId, w);
-          var sl = typeof o.sellUnitP === 'number' ? o.sellUnitP : Inventory.rowSellP(o.productId, w);
-          if (oldExtra[exKey(o.productId, w)] === undefined) { oldExtra[exKey(o.productId, w)] = ex; oldSell[exKey(o.productId, w)] = sl; }
+          if (oldExtra[exKey(o.productId, w)] === undefined) oldExtra[exKey(o.productId, w)] = ex;
           var q = Number(o.quantity) || 0;
           if (q > 0) {
             Inventory.apply(api, { productId: o.productId, warehouseId: w,
               qtyDelta: -q, kind: 'RECEIPT_EDIT_OUT', ref: number, refType: 'STOCK_RECEIPT_EDIT',
-              note: 'Reversed on receipt edit', date: prior.docDate, unitCostP: o.unitCostP || 0, extraCostP: ex, sellP: sl });
+              note: 'Reversed on receipt edit', date: prior.docDate, unitCostP: o.unitCostP || 0, extraCostP: ex });
           }
           api.del('stockDocItems', o.id);
         });
@@ -539,16 +533,13 @@ var StockDocs = ERP.StockDocs = {
             unitCostP: l.unitPrice ? M.toP(l.unitPrice) : Inventory.costOf(l.productId, rec.warehouseId)
           });
           var exKept = oldExtra[exKey(r.productId, r.warehouseId)];
-          var slKept = oldSell[exKey(r.productId, r.warehouseId)];
           r.extraUnitP = l.extraPerBag !== undefined && l.extraPerBag !== '' ? M.toP(l.extraPerBag)
             : (exKept !== undefined ? exKept : Inventory.rawExtraOf(r.productId));
-          r.sellUnitP = l.sellPerBag !== undefined && l.sellPerBag !== '' ? M.toP(l.sellPerBag)
-            : (slKept !== undefined ? slKept : Inventory.rawSellOf(r.productId));
           api.put('stockDocItems', r); S.stockDocItems.push(r);
           qty += q;
           Inventory.apply(api, { productId: r.productId, warehouseId: r.warehouseId, qtyDelta: q,
             kind: wasOpening ? 'OPENING_STOCK' : 'ADJUSTMENT_IN', ref: number, refType: 'STOCK_RECEIPT',
-            note: rec.reason, date: rec.docDate, unitCostP: r.unitCostP, extraCostP: r.extraUnitP, sellP: r.sellUnitP });
+            note: rec.reason, date: rec.docDate, unitCostP: r.unitCostP, extraCostP: r.extraUnitP });
         });
         rec.totalQty = qty; rec.lineCount = v.lines.length;
         api.put('stockDocs', rec);

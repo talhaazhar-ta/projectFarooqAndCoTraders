@@ -45,20 +45,23 @@ const run=async()=>{
   check('P1 with no extra cost saved the system shows 1,500 profit — it can only use what it was given',
     ERP.Profit.invoice(inv1.id).profit===M.toP(1500), M.fmt(ERP.Profit.invoice(inv1.id).profit));
 
-  /* the screen opens with what the system already knows */
+  /* the screen opens with what the system already knows. Purchase price / extra cost are now READ-ONLY
+     text (§27, 2026-09-28 — fixed to the document that typed them); only the selling price is an input. */
   ERP.openPriceEditor(X.id); await sleep(300);
-  check('P2 the purchase price box opens with the cost of the stock (6,000), not blank', box('buy').value==='6000', box('buy').value);
+  const roVals=()=>Array.from($('#panel').querySelectorAll('.pz-ro')).map(el=>el.textContent.trim());
+  check('P2 the purchase price shows the cost of the stock (6,000), not blank, read-only', roVals()[0]==='PKR 6,000', roVals()[0]);
   check('P3 the selling price box opens with the rate it last sold at (6,300) and says where that came from',
     box('sell').value==='6300' && /last sale/i.test($('#panel').textContent), box('sell').value);
-  check('P4 the extra cost box is empty — nothing is saved yet',
-    box('extra').value==='', box('extra').value);
+  check('P4 the extra cost shows nothing — nothing is saved yet', roVals()[1]==='—', roVals()[1]);
   check('P5 the reason box says it is optional', /Reason for the change \(optional\)/.test($('#panel').textContent));
 
   click($('#panel [data-close]')); await sleep(150);
 
-  /* the calculation, written out */
+  /* the calculation, written out. The extra cost can no longer be typed on this screen — it is fixed to
+     the purchase/receipt that carries it (here simulated the same way CLAUDE.md item 13 describes: "the
+     first extra typed on a product with none covers stock already held", Prices.set's own pinning). */
+  await ERP.Prices.set(X.id,{extra:200},{reason:'test — the extra cost, typed on a document in real life'});
   ERP.openPriceEditor(X.id); await sleep(300);
-  type(box('buy'),'6000'); type(box('extra'),'200'); type(box('sell'),'6300');
   const rows=$('#pzCalcRows').textContent;
   check('P7 the screen writes the sum: purchase 6,000, + extra 200, = total cost 6,200, selling 6,300, profit per bag 100',
     /Purchase price\s*PKR 6,000/.test(rows) && /\+ Extra cost\s*PKR 200/.test(rows) && /= Total cost per bag\s*PKR 6,200/.test(rows) &&
@@ -71,13 +74,17 @@ const run=async()=>{
   check('P9 an empty bag count falls back to 1 bag rather than showing nonsense', /1 bag\b/.test($('#pzCalcTot').textContent), $('#pzCalcTot').textContent);
   type($('#panel [data-pzqty]'),'5');
 
-  /* Save with NO reason — the client's stumbling block */
+  /* Save with NO reason — the client's stumbling block. Only the selling price is submitted now; it was
+     already prefilled from the last sale (6,300), so Save just confirms it as the product's own figure. */
+  type(box('sell'),'6300');
   click($('#panel [data-save]')); await sleep(500);
   const info=ERP.Prices.of(X.id);
-  check('P10 Save works with the reason left empty: extra 200 is stored, total cost 6,200',
-    info.extra===M.toP(200) && info.totalCost===M.toP(6200) && info.sell===M.toP(6300), `${info.extra} ${info.totalCost} ${info.sell}`);
-  check('P11 it is in the price history (visible, with an empty reason)',
-    ERP.Prices.history(X.id).some(h=>h.field==='extra' && h.newValue===M.toP(200)));
+  check('P10 Save stores the selling price; the extra cost (typed earlier, on the stock itself) already makes the true cost 6,200',
+    info.sell===M.toP(6300) && ERP.Inventory.averages(X.id).cost+ERP.Inventory.averages(X.id).extra===M.toP(6200) &&
+    ERP.Inventory.saleCostOf(X.id,wh)===M.toP(6200),
+    `sell=${info.sell} cost+extra=${ERP.Inventory.averages(X.id).cost+ERP.Inventory.averages(X.id).extra} saleCost=${ERP.Inventory.saleCostOf(X.id,wh)}`);
+  check('P11 the selling-price change is in the price history, with an empty reason (the panel Save left it blank)',
+    ERP.Prices.history(X.id).some(h=>h.field==='sell' && h.newValue===M.toP(6300) && (h.reason||'')===''));
   check('P12 the direct call also accepts no reason at all',
     (await ERP.Prices.set(X.id,{min:6100},{})).applied===true);
 
@@ -93,9 +100,9 @@ const run=async()=>{
 
   /* a Save that would store nothing, after the values are saved */
   ERP.openPriceEditor(X.id); await sleep(300);
-  check('P15 reopened, the boxes show the SAVED values (6,000 / 200 / 6,300)',
-    box('buy').value==='6000' && box('extra').value==='200' && box('sell').value==='6300',
-    [box('buy').value,box('extra').value,box('sell').value].join(' / '));
+  check('P15 reopened, the panel shows the saved figures — purchase/extra read-only (6,000 / 200), selling price editable (6,300)',
+    roVals()[0]==='PKR 6,000' && roVals()[1]==='PKR 200' && box('sell').value==='6300',
+    [roVals()[0],roVals()[1],box('sell').value].join(' / '));
   click($('#panel [data-save]')); await sleep(300);
   check('P16 pressing Save without changing anything says so inside the screen and stores nothing',
     /Nothing to save/.test($('#panelErr').textContent) && ERP.Prices.history(X.id).filter(h=>h.field==='extra').length===1,
