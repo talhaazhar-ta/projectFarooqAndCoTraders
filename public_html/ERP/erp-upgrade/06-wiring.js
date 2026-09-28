@@ -1030,6 +1030,37 @@ D.addEventListener('click', function (e) {
   var add = h('[data-fcbadd]');
   if (add) { e.preventDefault(); ERP.BuilderUI.addLine(add.dataset.fcbadd); return; }
 
+  /* Sale prices are read-only at the POS (§25) — the pencil beside a line's rate jumps to the purchase
+     that priced it. Prefers a purchase into the SAME warehouse as the line, falling back to the most
+     recent purchase of the product anywhere; warns first if this sale has unsaved changes, since editing
+     the purchase discards the draft the same way navigating away always does. */
+  var pup = h('[data-fcpuredirect]');
+  if (pup) {
+    e.preventDefault();
+    var pid = pup.dataset.fcpuredirect, pwh = pup.dataset.fcwh;
+    var goEditPurchase = function () {
+      var withPu = (ERP.S.purchaseItems || []).filter(function (it) { return it.productId === pid; })
+        .map(function (it) { return { it: it, pu: ERP.Purchases.byId(it.purchaseId) }; })
+        .filter(function (x) { return x.pu && x.pu.status !== 'CANCELLED'; });
+      if (!withPu.length) { say('No purchase found for this product yet.'); return; }
+      var sameWh = withPu.filter(function (x) { return x.it.warehouseId === pwh; });
+      var pick = (sameWh.length ? sameWh : withPu).sort(function (a, b) {
+        var ad = a.pu.updatedAt || a.pu.createdAt || '', bd = b.pu.updatedAt || b.pu.createdAt || '';
+        return ad < bd ? 1 : ad > bd ? -1 : 0;
+      })[0];
+      editPurchase(pick.pu.id);
+    };
+    if (B.dirty) {
+      ERP.UI.confirm('Leave this sale to edit the purchase?', {
+        detail: 'What you have entered on this sale so far has not been saved and will be lost.',
+        okText: 'Discard and continue', cancelText: 'Keep editing', tone: 'warn'
+      }).then(function (ok) { if (ok) goEditPurchase(); });
+    } else {
+      goEditPurchase();
+    }
+    return;
+  }
+
   /* line controls */
   var del = h('[data-fcdel]');
   if (del) {
@@ -1131,7 +1162,7 @@ D.addEventListener('input', function (e) {
   }
   if (el.dataset.fcb && B.draft) {
     var key = el.dataset.fcb;
-    if (['invoiceDiscount', 'freight', 'loading', 'otherCharges', 'paidAmount'].indexOf(key) > -1) {
+    if (['invoiceDiscount', 'freight', 'loading', 'otherCharges', 'otherChargesPerBag', 'sellingPrice', 'paidAmount'].indexOf(key) > -1) {
       B.draft[key] = el.value; B.dirty = true; ERP.BuilderUI.refreshTotals(); return;
     }
     if (['notes', 'description', 'referenceNo', 'orderNumber', 'dispatchNumber', 'salesperson',

@@ -9279,19 +9279,10 @@ function lineRows() {
           '" inputmode="decimal" value="' + esc(it.quantity) + '" placeholder="0"></td>';
         case 'recv': return '<td class="r" data-label="Received"><input class="fcb-in num" data-fcline="recv" data-ix="' + ix +
           '" inputmode="decimal" value="' + esc(it.receivedQty) + '" placeholder="all"></td>';
-        case 'rate': return '<td class="r" data-label="' + (cfg.cost ? 'Cost' : 'Rate') + '">' +
-          (B.mode === 'sale' ?
-            '<div class="fcb-ro-rate" style="display:flex;align-items:center;justify-content:flex-end;gap:6px">' +
-              M.fmtPlain(calc.unitPrice) +
-              '<button type="button" class="icon-btn xs" data-fcpuredirect="' + p.id + '" title="Edit prices">✏️</button>' +
-            '</div>' :
-            '<input class="fcb-in num" data-fcline="rate" data-ix="' + ix + '" inputmode="decimal" value="' + esc(it.unitPrice) + '" placeholder="0">') +
-          '</td>';
-        case 'disc': return '<td class="r" data-label="Discount">' +
-          (B.mode === 'sale' ?
-            '<span class="fcb-ro-rate">' + M.fmtPlain(calc.discount) + '</span>' :
-            '<input class="fcb-in num" data-fcline="disc" data-ix="' + ix + '" inputmode="decimal" value="' + esc(it.discount) + '" placeholder="0">') +
-          '</td>';
+        case 'rate': return '<td class="r" data-label="' + (cfg.cost ? 'Cost' : 'Rate') + '"><input class="fcb-in num" data-fcline="rate" data-ix="' + ix +
+          '" inputmode="decimal" value="' + esc(it.unitPrice) + '" placeholder="0"></td>';
+        case 'disc': return '<td class="r" data-label="Discount"><input class="fcb-in num" data-fcline="disc" data-ix="' + ix +
+          '" inputmode="decimal" value="' + esc(it.discount) + '" placeholder="0"></td>';
         case 'amt': return '<td class="r num fcb-amtcell" data-label="Amount"><b data-fcamt="' + ix + '">' + M.fmtPlain(calc.lineTotal) + '</b></td>';
         default: return '<td class="c fcb-acts" data-label="">' +
           '<button class="icon-btn sm" data-fcmove="up" data-ix="' + ix + '" title="Move up"' +
@@ -9313,15 +9304,6 @@ function totalsBar() {
     return row('Lines', String(B.draft.items.length)) +
       row('Total bags', Number(t.totalQty).toLocaleString('en-US'), 'grand');
   }
-  /* Simplified totals for purchase and receive (add stock) modes */
-  if (B.mode === 'purchase' || B.mode === 'receive') {
-    var sp = B.draft.sellingPrice ? M.fmt(M.toP(B.draft.sellingPrice)) : '—';
-    return row('Subtotal', M.fmt(t.subtotal)) +
-      row('Extra charges', M.fmt(t.otherCharges)) +
-      row('Bags', Number(t.totalQty).toLocaleString('en-US')) +
-      row('Selling price / bag', sp) +
-      row('Grand total', M.fmt(t.grandTotal), 'grand');
-  }
   var prev = cfg.party === 'customer' && B.draft.customerId ? ERP.Ledger.customerBalance(B.draft.customerId) : 0;
   return row('Subtotal', M.fmt(t.subtotal)) +
     row('Discount', '− ' + M.fmt(t.discountAmount)) +
@@ -9333,12 +9315,7 @@ function totalsBar() {
 }
 
 function chargesBlock() {
-  if (!B.cfg.rates && !B.cfg.cost) {
-    return '<div class="card fcb-card"><div class="card-h"><h3>Notes</h3></div><div class="card-b">' +
-      '<label class="f"><span>Notes</span><textarea data-fcb="notes" rows="2" placeholder="Optional">' +
-      esc(B.draft.notes || '') + '</textarea></label></div></div>';
-  }
-  if (B.mode === 'supreturn') {
+  if (!B.cfg.rates || B.mode === 'supreturn') {
     return '<div class="card fcb-card"><div class="card-h"><h3>Notes</h3></div><div class="card-b">' +
       '<label class="f"><span>Notes</span><textarea data-fcb="notes" rows="2" placeholder="Optional">' +
       esc(B.draft.notes || '') + '</textarea></label></div></div>';
@@ -9349,54 +9326,27 @@ function chargesBlock() {
       '" inputmode="decimal" value="' + esc(B.draft[key] || '') + '" placeholder="0">' +
       (hint ? '<span class="hint">' + hint + '</span>' : '') + '</label>';
   };
-  var fText = function (key, label, hint, placeholder) {
-    return '<label class="f"><span>' + label + '</span><input data-fcb="' + key +
-      '" value="' + esc(B.draft[key] || '') + '"' + (placeholder ? ' placeholder="' + placeholder + '"' : '') + '>' +
-      (hint ? '<span class="hint">' + hint + '</span>' : '') + '</label>';
-  };
-
-  /* ── Simplified "charges & payment" for purchase and add-stock modes ── */
-  if (B.mode === 'purchase' || B.mode === 'receive') {
-    var sellHint = 'Sets the default selling price on new invoices for this product';
-    return '<div class="card fcb-card"><div class="card-h"><h3>Charges &amp; pricing</h3></div><div class="card-b">' +
-      '<div class="f2">' +
-        f('otherChargesPerBag', 'Extra charges / bag', 'Any additional cost on top of the purchase price (loading, transport, etc.)') +
-        f('sellingPrice', 'Selling price / bag', sellHint) +
-      '</div>' +
-      (B.mode === 'purchase' ?
-        '<div class="f2 fc-amtpaid">' + f('paidAmount', 'Amount paid',
-            B.editingId ? 'What has been paid so far. Raising it records a new payment voucher.' : 'Leave at 0 to pay later.') +
-          '<label class="f"><span>Payment method</span><select data-fcb="paymentMethod">' +
-            ERP.ENUM.methods.map(function (m) {
-              return '<option' + (B.draft.paymentMethod === m ? ' selected' : '') + '>' + m + '</option>';
-            }).join('') + '</select></label></div>' +
-          fText('referenceNo', 'Reference / bilty no.', '', 'Cheque / transaction / bilty number') : '') +
-      '<label class="f"><span>Internal note</span><textarea data-fcb="notes" rows="2" ' +
-        'placeholder="Optional">' + esc(B.draft.notes || '') + '</textarea></label>' +
-      '<div class="fcb-check">' + (t.grandTotal ? 'Purchase total ' + M.fmt(t.grandTotal) +
-        (B.draft.sellingPrice ? ' · Selling price ' + M.fmt(M.toP(B.draft.sellingPrice)) + ' / bag' : '') :
-        'Add a line to see the totals.') +
-      '</div></div></div>';
-  }
-
   var isSaleSide = B.cfg.party === 'customer';
   var quoteLike = B.mode === 'order' || B.mode === 'quotation';
   return '<div class="card fcb-card"><div class="card-h"><h3>Charges' +
       (quoteLike ? '' : ' &amp; payment') + '</h3></div><div class="card-b">' +
-    (B.mode === 'sale' ? '' :
-      '<div class="f2">' + f('invoiceDiscount', 'Overall discount') + f('freight', 'Delivery / freight') + '</div>' +
-      '<div class="f2">' + f('loading', 'Loading / unloading') + f('otherCharges', 'Other charges') + '</div>'
-    ) +
+    '<div class="f2">' + f('invoiceDiscount', 'Overall discount') + f('freight', 'Delivery / freight') + '</div>' +
+    '<div class="f2">' + f('loading', 'Loading / unloading') + f('otherCharges', 'Other charges') + '</div>' +
     (quoteLike ? '' :
       '<div class="f2 fc-amtpaid">' + f('paidAmount', 'Amount Paid',
           isSaleSide ? 'Leave at 0 for a credit sale'
-            : '') +
+            : (B.mode === 'purchase' && B.editingId
+                ? 'What has been paid with this purchase so far. Raising it records another payment voucher for ' +
+                  'the difference; to lower it, reverse the voucher from Payments.' : '')) +
         '<label class="f"><span>Payment method</span><select data-fcb="paymentMethod">' +
           ERP.ENUM.methods.map(function (m) {
             return '<option' + (B.draft.paymentMethod === m ? ' selected' : '') + '>' + m + '</option>';
           }).join('') + '</select></label></div>' +
       '<label class="f"><span>Reference number</span><input data-fcb="referenceNo" class="mono" value="' +
         esc(B.draft.referenceNo || '') + '" placeholder="Cheque / transaction / bilty number"></label>') +
+    /* the ledger-facing line — shown on the statement. Separate from Notes,
+       which stays an internal remark. Left blank, the statement generates a
+       sensible default instead. */
     '<label class="f fc-desc"><span>Description / تفصیل</span><input data-fcb="description" ' +
       'maxlength="500" value="' + esc(B.draft.description || '') + '" ' +
       'placeholder="Appears on the account statement — English or Urdu"></label>' +
@@ -9553,12 +9503,6 @@ B.save = function (asDraft) {
   setSaving(true, asDraft ? 'Saving draft…' : 'Saving…');
   var cfg = B.cfg, mode = B.mode, orderId = B.draft.saleOrderId, wasEdit = !!B.editingId;
 
-  /* Snapshot selling-price intent before the draft is cleared */
-  var pendingSP = B.draft.sellingPrice ? String(B.draft.sellingPrice).replace(/[^0-9.]/g, '') : '';
-  var pendingPids = (B.draft.items || [])
-    .map(function (it) { return it.productId; })
-    .filter(function (id, i, a) { return id && a.indexOf(id) === i; });
-
   cfg.save(B.draft, asDraft).then(function (rec) {
     setSaving(false); B.dirty = false;
     var no = rec.invoiceNumber || rec.purchaseNumber || rec.orderNumber ||
@@ -9567,25 +9511,6 @@ B.save = function (asDraft) {
         : cfg.title.replace(/^New /, '') + ' saved' + (no ? ' — ' + no : '') + '.');
     if (mode === 'sale' && orderId) ERP.Orders.markInvoiced(orderId, rec);
     ERP.Notify.fire(mode === 'sale' ? 'INVOICE_CREATED' : 'TRANSACTION_SAVED', { id: rec.id, ref: no });
-
-    /* ── Persist selling price to each product in the transaction ── */
-    if (!asDraft && pendingSP && (mode === 'purchase' || mode === 'receive')) {
-      var spNum = Number(pendingSP);
-      if (spNum > 0) {
-        pendingPids.forEach(function (pid) {
-          var p = global.prodOf ? global.prodOf(pid) : null;
-          if (!p) return;
-          if (ERP.Prices && ERP.Prices.set) {
-            ERP.Prices.set(pid, { sell: String(spNum) }, { reason: 'Set at ' + (mode === 'purchase' ? 'purchase' : 'stock receipt') })
-              .catch(function () { if (p) { p.sell = spNum; } });
-          } else {
-            p.sell = spNum;
-            if (global.Money) p.sellP = global.Money.toP(spNum);
-          }
-        });
-      }
-    }
-
     B.draft = null;
     global.go(cfg.back);
     if (!asDraft && cfg.after) {
