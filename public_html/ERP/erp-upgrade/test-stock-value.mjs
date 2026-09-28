@@ -301,11 +301,15 @@ async function main() {
   d = SV.build({});
   check('M4 a receipt with no cost typed for a product with no price stays "no cost" and adds nothing',
     rowOf(d, pI).costSrc === 'none' && d.totals.valueP === beforeI);
+  /* §26, 2026-09-28: Add stock now blends into the SAME recorded average a purchase does (the client wants
+     one average built from both), instead of leaving the purchase-kept figure untouched */
   const pALotsBefore = rowOf(SV.build({}), pA, wh.id);
   await receive(pA, 5, 9999, false);             // a wildly different typed cost on a row that has a purchase-kept average
   const pAAfter = rowOf(SV.build({}), pA, wh.id);
-  check('M5 a purchase-kept average is not overridden by a later typed receipt cost (recorded wins)',
-    pAAfter.costSrc === 'recorded' && pAAfter.costP === pALotsBefore.costP && pAAfter.qty === pALotsBefore.qty + 5);
+  const expectM5 = Math.round((pALotsBefore.qty * pALotsBefore.costP + 5 * R(9999)) / (pALotsBefore.qty + 5));
+  check('M5 a later Add-stock receipt blends into the same recorded average a purchase would',
+    pAAfter.costSrc === 'recorded' && pAAfter.costP === expectM5 && pAAfter.qty === pALotsBefore.qty + 5,
+    pAAfter.costP + ' vs expected ' + expectM5);
   set(pJ, wh.id, 5, R(700));
   set(pJ, wh2.id, 8, 0);                         // a row with stock but no cost and no movement behind it
   d = SV.build({});

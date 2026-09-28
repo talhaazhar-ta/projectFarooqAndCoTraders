@@ -253,6 +253,10 @@ WH.post = function (type, draft) {
             var x = p.extraP !== undefined && p.extraP !== null ? Number(p.extraP) : (p.extra ? M.toP(p.extra) : 0);
             return x > 0 ? x : 0;
           })();
+          var sellNow = (function () {                            /* Inventory.rawSellOf, §26 2026-09-28 */
+            var x = p.sellP !== undefined && p.sellP !== null ? Number(p.sellP) : (p.sell ? M.toP(p.sell) : 0);
+            return x > 0 ? x : 0;
+          })();
           var sdItem = {                                          /* snapshot() in 07-transactions.js */
             id: FDB.uid('sdi'), docId: rec.id, sortOrder: ix, direction: def.out ? 'OUT' : 'IN',
             warehouseId: draft.warehouseId, toWarehouseId: null, reason: rec.reason, fromDamaged: false, unitCostP: unitCostP,
@@ -260,14 +264,20 @@ WH.post = function (type, draft) {
             brandSnapshot: p.brandEn || p.brand || '', categorySnapshot: p.cat || '', packageSnapshot: p.kg ? p.kg + ' KG' : 'Bag',
             skuSnapshot: p.sku || p.sourceFolio || p.id || '', unit: 'Bag', quantity: q, batchNo: '', notes: ''
           };
-          if (type === 'RECEIVE') sdItem.extraUnitP = extraNow;   /* the office's receipt line keeps it too (StockDocs.save) */
+          if (type === 'RECEIVE') { sdItem.extraUnitP = extraNow; sdItem.sellUnitP = sellNow; }   /* the office's receipt line keeps them too (StockDocs.save) */
           api.put('stockDocItems', sdItem);
           qty += q;
           if (type === 'RECEIVE' || deduct) {                     /* Inventory.apply */
             var r = row(l.productId, draft.warehouseId), delta = type === 'RECEIVE' ? q : -q;
-            if (type === 'RECEIVE') {                              /* Inventory.apply: blend in the extra cost of the bags coming in */
+            if (type === 'RECEIVE') {                              /* Inventory.apply: blend in the extra cost / selling price of the bags coming in */
               var exPrev = typeof r.avgExtraP === 'number' ? r.avgExtraP : extraNow;
               r.avgExtraP = r.qty > 0 ? Math.round((r.qty * exPrev + delta * extraNow) / (r.qty + delta)) : extraNow;
+              var slPrev = typeof r.avgSellP === 'number' ? r.avgSellP : sellNow;
+              r.avgSellP = r.qty > 0 ? Math.round((r.qty * slPrev + delta * sellNow) / (r.qty + delta)) : sellNow;
+              /* §26, 2026-09-28: the office's Inventory.apply now blends avgCostP for a stock receipt too
+                 (not just a purchase) — this warehouse-app mirror must match it (test-warehouse-server.mjs
+                 is the drift guard), since unitCostP here already comes from the same costOf fallback. */
+              r.avgCostP = r.qty > 0 && r.avgCostP > 0 ? Math.round((r.qty * r.avgCostP + delta * unitCostP) / (r.qty + delta)) : unitCostP;
             }
             r.qty = Math.round((r.qty + delta) * 1000) / 1000;
             api.put('inventory', r);

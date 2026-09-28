@@ -250,13 +250,18 @@
         if (!map[k]) {
           var p = global.prodOf && global.prodOf(it.productId);
           map[k] = { productId: k, name: p ? (p.en || p.ur) : k,
-                     qty: 0, revenue: 0, landedCost: 0, purchaseCost: 0 };
+                     qty: 0, revenue: 0, landedCost: 0, purchaseCost: 0, extraCost: 0 };
         }
         var r = map[k];
         r.qty += it.quantity;
         r.revenue += it.lineTotal || 0;
         r.landedCost += M.mul(it.costSnapshot || 0, it.quantity);
+        /* "Purchase cost" / "Additional" here are the Landed-costs screen's own goods-vs-operational split
+           (goodsAverage, unchanged) — a different axis from the client's product-level "Extra cost per bag"
+           (§26), which is tracked separately below as extraCost so it can be shown without disturbing this
+           existing, tested breakdown. */
         r.purchaseCost += M.mul(goodsAverage(it.productId, it.warehouseId), it.quantity);
+        r.extraCost += M.mul(typeof it.costExtraSnapshot === 'number' ? it.costExtraSnapshot : 0, it.quantity);
       });
     });
     return Object.keys(map).map(function (k) {
@@ -266,6 +271,7 @@
       r.perUnit = r.qty ? Math.round(r.profit / r.qty) : 0;
       r.costPerUnit = r.qty ? Math.round(r.landedCost / r.qty) : 0;
       r.purchasePerUnit = r.qty ? Math.round(r.purchaseCost / r.qty) : 0;
+      r.extraPerUnit = r.qty ? Math.round(r.extraCost / r.qty) : 0;
       r.sellPerUnit = r.qty ? Math.round(r.revenue / r.qty) : 0;
       r.margin = r.revenue ? Math.round(r.profit / r.revenue * 1000) / 10 : 0;
       return r;
@@ -350,7 +356,10 @@
           '<td data-label="Purchase cost" class="r">' + money(r.purchasePerUnit) + '</td>' +
           '<td data-label="Additional" class="r">' +
             money(r.qty ? Math.round(r.additional / r.qty) : 0) + '</td>' +
-          '<td data-label="Landed cost" class="r"><b>' + money(r.costPerUnit) + '</b></td>' +
+          /* §26, 2026-09-28: a hover title spells out the client's own written sum — purchase + extra =
+             total — without disturbing this table's existing columns or their tested meaning */
+          '<td data-label="Landed cost" class="r"' + (r.extraPerUnit ? ' title="Purchase ' + money(r.purchasePerUnit) +
+            ' + extra ' + money(r.extraPerUnit) + ' = ' + money(r.costPerUnit) + '"' : '') + '><b>' + money(r.costPerUnit) + '</b></td>' +
           '<td data-label="Selling" class="r">' + money(r.sellPerUnit) + '</td>' +
           '<td data-label="Profit/unit" class="r">' + money(r.perUnit) + '</td>' +
           '<td data-label="Total profit" class="r ' + (r.profit < 0 ? 'lc-neg' : '') + '"><b>' +

@@ -232,17 +232,17 @@ const run=async()=>{
   const clean=buyDbl(); clean.otherCharges=0;
   check('R39 the same purchase with no charges saves at once', !!(await ERP.Purchases.save(clean).then(r=>r,()=>null)));
 
-  /* the price screen shows what is already counted, so it is not typed again */
+  /* §26, 2026-09-28: the price screen was simplified to one plain "Average purchase price" — the special
+     "these bags already carry transport, don't type it again" banner (and the live "Careful, counted
+     twice" warning under Extra cost) is gone along with the rest of that card. The average purchase price
+     is now simply the stock's own recorded/carried cost, landed charges included when the basis is LANDED —
+     so it genuinely shows 6,200, not the pre-charge 6,000 the old special-cased banner used to substitute. */
   await ERP.Purchases.save({supplierId:mill,warehouseId:wh,purchaseDate:'2026-09-26',otherCharges:1000,items:[{productId:plain.id,quantity:5,unitPrice:6000}]});
   ERP.openPriceEditor(plain.id); await sleep(300);
-  const lbTxt=$('#pzLanded')?$('#pzLanded').textContent.replace(/\s+/g,' '):'';
-  check('R40 the price screen says the stock already carries 200 per bag: supplier price 6,000 + charges 200 = 6,200',
-    /already carry PKR 200 per bag/.test(lbTxt) && /supplier price PKR 6,000 \+ charges PKR 200 = PKR 6,200/.test(lbTxt) && /counted twice/.test(lbTxt), lbTxt);
-  check('R41 "Purchase price" opens on what the MILL charges (6,000), not the stock\'s 6,200 that already includes the charges',
-    $('#panel [data-f="buy"]').value==='6000', $('#panel [data-f="buy"]').value);
-  type($('#panel [data-f="extra"]'),'200');
-  check('R42 typing an extra cost there warns at once that it would be counted twice',
-    /Careful/.test($('#pzLive').textContent) && /counted twice/.test($('#pzLive').textContent), $('#pzLive').textContent);
+  check('R40 landedAlready/landedBreakdown (the data behind the old banner) still work',
+    ERP.Prices.landedAlready(plain.id)===true && ERP.Prices.landedBreakdown(plain.id).charge===M.toP(200));
+  check('R41 "Average purchase price" now shows the stock\'s own recorded cost, 6,200 (charges included)',
+    $('#panel [data-f="buy"]').value==='6200', $('#panel [data-f="buy"]').value);
   click($('#panel [data-close]')); await sleep(120);
   /* the client's round: sold 31,500, shop paid 3,200, ALL bags returned, the 3,200 handed back through "Pay a shop" */
   const shopH=win.CUSTOMERS[12].id;

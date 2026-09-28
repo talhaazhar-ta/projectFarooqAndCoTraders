@@ -114,16 +114,20 @@ const run=async()=>{
   await ERP.Purchases.save({supplierId:mill,warehouseId:wh,purchaseDate:'2026-09-21',freight:10000,
     items:[{productId:W.id,quantity:100,unitPrice:2000}]});
   const D=win.document, $=s=>D.querySelector(s);
+  /* the price panel itself was simplified 2026-09-28 (§26) and no longer shows the old "these bags already
+     carry transport" banner (the Charges & payment card it belonged to is gone from Purchases too) — but
+     the underlying landedAlready/landedBreakdown functions it was built on are unchanged, and still say
+     whether this product's stock already carries Landed-cost transport. */
   ERP.openPriceEditor(W.id); await sleep(300);
-  check('X19 the price panel warns when the product\'s purchases already carry transport through Landed costs',
-    ERP.Prices.landedAlready(W.id)===true && !!$('#pzLanded') && /counted twice/.test($('#pzLanded').textContent));
+  check('X19 landedAlready still reports transport already carried through Landed costs',
+    ERP.Prices.landedAlready(W.id)===true, String(ERP.Prices.landedAlready(W.id)));
+  check('X19b the panel still opens for that product without throwing, showing its averages',
+    !!$('#panel [data-f="buy"]') && $('#panel [data-f="buy"]').value!=='');
   ERP.openPriceEditor(X.id); await sleep(300);
-  check('X20 no such warning for a product bought without charges', ERP.Prices.landedAlready(X.id)===false && !$('#pzLanded'));
+  check('X20 no such warning for a product bought without charges', ERP.Prices.landedAlready(X.id)===false);
   await ERP.Settings.save({profitCostBasis:'PURCHASE'});
   check('X21 nor on the purchase-price-only basis (the extra is not added there)', ERP.Prices.landedAlready(W.id)===false);
   await ERP.Settings.save({profitCostBasis:'LANDED'});
-  check('X22 the Extra cost box says new bags carry it and old stock keeps its own',
-    /Bags already in stock keep the extra they came in with/.test($('#panel').textContent));
 
   check('X18 nothing threw during the session', errors.length===0, errors.slice(0,2).join(' | '));
   win.close();

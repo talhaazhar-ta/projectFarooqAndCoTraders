@@ -274,25 +274,63 @@ function convertSummary(d) {
   return f.descriptionEnSnapshot + ' → ' + f.toDescriptionEnSnapshot + ' × ' + qtyFmt(f.quantity) +
     (items.length > 1 ? ' +' + (items.length - 1) + ' more' : '');
 }
+/* the product names on a stock document, for the search box and the row's data-row text (§26, 2026-09-28:
+   client — "Stock receipts... a product can be searched and only those lists where that product is") */
+function docProductNames(d) {
+  return ERP.StockDocs.items(d.id).map(function (i) {
+    return i.descriptionEnSnapshot || i.descriptionSnapshot || '';
+  }).filter(Boolean).join(' ');
+}
 function docTable(type, title, empty) {
   var list = ERP.StockDocs.byType(type);
   if (!list.length) return '<div class="empty"><div class="ei">' + I('box') + '</div><b>' + empty + '</b></div>';
+  /* a shared search box (module 42/base toolbar pattern): typing filters the [data-row] rows below by
+     product name, document number, warehouse or reason — RECEIVE is the one this was asked for, but every
+     stock-document list gets it, since they all share this one renderer */
+  var boxId = 'fcdocq-' + type;
   return '<div class="card"><div class="card-h"><h3>' + title + '</h3>' +
-    '<span class="pill neu">' + list.length + '</span></div><div class="card-b"><div class="tw">' +
-    '<table class="fcb-list"><thead><tr><th>Number</th><th>Date</th><th>Warehouse</th>' +
+    '<span class="pill neu">' + list.length + '</span></div><div class="card-b">' +
+    '<div class="bar"><div class="tsearch">' + I('search') + '<input id="' + boxId + '" data-fcdocq="' + type +
+      '" placeholder="Search by product, number, warehouse…" value=""></div></div>' +
+    '<div class="tw"><table class="fcb-list"><thead><tr><th>Number</th><th>Date</th><th>Warehouse</th>' +
     '<th class="c">Lines</th><th class="r">Bags</th><th>Detail</th><th class="c">Document</th>' +
-    '</tr></thead><tbody>' +
-    list.map(function (d) {
-      return '<tr><td class="mono"><b>' + esc(d.docNumber) + '</b></td>' +
-        '<td>' + esc(fmtDate(d.docDate)) + '</td>' +
-        '<td>' + esc(d.warehouseSnapshot) + '</td>' +
-        '<td class="c num">' + d.lineCount + '</td>' +
-        '<td class="r num">' + qtyFmt(d.totalQty) + '</td>' +
-        '<td>' + esc(d.toWarehouseSnapshot || d.customerSnapshot || (d.type === 'CONVERT' ? convertSummary(d) : '') || d.reason || '—') + '</td>' +
-        '<td class="c"><button class="btn sm" data-fcdoc="stock" data-id="' + d.id + '">Open</button>' +
-          (ERP.StockDocs.canEdit(d) ? ' <button class="btn sm" data-fcsdedit="' + d.id + '">Edit</button>' : '') + '</td></tr>';
-    }).join('') + '</tbody></table></div></div></div>';
+    '</tr></thead><tbody id="fcdoctb-' + type + '">' + docRows(list) + '</tbody></table></div></div></div>';
 }
+function docRows(list) {
+  return list.map(function (d) {
+    var hay = [d.docNumber, d.warehouseSnapshot, d.toWarehouseSnapshot, d.customerSnapshot, d.reason, docProductNames(d)]
+      .filter(Boolean).join(' ');
+    return '<tr data-row="' + esc(hay.toLowerCase()) + '"><td class="mono"><b>' + esc(d.docNumber) + '</b></td>' +
+      '<td>' + esc(fmtDate(d.docDate)) + '</td>' +
+      '<td>' + esc(d.warehouseSnapshot) + '</td>' +
+      '<td class="c num">' + d.lineCount + '</td>' +
+      '<td class="r num">' + qtyFmt(d.totalQty) + '</td>' +
+      '<td>' + esc(d.toWarehouseSnapshot || d.customerSnapshot || (d.type === 'CONVERT' ? convertSummary(d) : '') || d.reason || '—') + '</td>' +
+      '<td class="c"><button class="btn sm" data-fcdoc="stock" data-id="' + d.id + '">Open</button>' +
+        (ERP.StockDocs.canEdit(d) ? ' <button class="btn sm" data-fcsdedit="' + d.id + '">Edit</button>' : '') + '</td></tr>';
+  }).join('');
+}
+/* typing in a document list's own search box filters just that list's rows by their data-row text —
+   independent of the page-level toolbar filter, which these lists don't have one of */
+global.document.addEventListener('input', function (e) {
+  if (!e.target || e.target.dataset.fcdocq === undefined) return;
+  var type = e.target.dataset.fcdocq, q = e.target.value.toLowerCase().trim();
+  var tb = global.document.getElementById('fcdoctb-' + type);
+  if (!tb) return;
+  Array.prototype.forEach.call(tb.querySelectorAll('tr[data-row]'), function (tr) {
+    tr.style.display = !q || tr.dataset.row.indexOf(q) > -1 ? '' : 'none';
+  });
+});
+/* a page can ask a stock-document list to open already filtered to one product (from the Prices screen) */
+ERP.openReceiptsFor = function (pid) {
+  var p = global.prodOf ? global.prodOf(pid) : null;
+  var name = p ? (p.en || p.ur || '') : '';
+  global.go('inventory');
+  setTimeout(function () {
+    var box = global.document.getElementById('fcdocq-RECEIVE');
+    if (box) { box.value = name; box.dispatchEvent(new global.Event('input', { bubbles: true })); box.scrollIntoView({ block: 'center' }); }
+  }, 60);
+};
 var origDispatch = global.PAGES.dispatch;
 global.PAGES.dispatch = function () {
   return '<div class="bar"><div class="grow"></div>' +

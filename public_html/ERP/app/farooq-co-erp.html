@@ -1197,7 +1197,7 @@ PAGES.inventory=()=>{
 /* ══ Purchases (§9) ══ */
 PAGES.purchases=()=>{
   const rows=PURCHASES.map(p=>{const pr=prodOf(p.pid);
-    return `<tr data-row="${pTxt(pr)} ${supOf(p.sup)?supOf(p.sup).co:''} ${p.ref}" data-wh="${p.wid}" data-date="${p.iso}" data-status="${p.pay}" data-cat="${pr.cat}">
+    return `<tr data-row="${pTxt(pr)} ${supOf(p.sup)?supOf(p.sup).co:''} ${p.ref} ${p.doc||''} ${p.grn||''}" data-wh="${p.wid}" data-date="${p.iso}" data-status="${p.pay}" data-cat="${pr.cat}">
     <td>${p.date}</td><td class="mono">${p.ref||'—'}</td>
     <td class="t-main">${supOf(p.sup)?supOf(p.sup).co:'—'}</td>
     <td>${pLbl(pr)}</td><td>${bagLbl(pr)}</td>

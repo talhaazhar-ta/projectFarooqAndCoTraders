@@ -1030,34 +1030,14 @@ D.addEventListener('click', function (e) {
   var add = h('[data-fcbadd]');
   if (add) { e.preventDefault(); ERP.BuilderUI.addLine(add.dataset.fcbadd); return; }
 
-  /* Sale prices are read-only at the POS (§25) — the pencil beside a line's rate jumps to the purchase
-     that priced it. Prefers a purchase into the SAME warehouse as the line, falling back to the most
-     recent purchase of the product anywhere; warns first if this sale has unsaved changes, since editing
-     the purchase discards the draft the same way navigating away always does. */
-  var pup = h('[data-fcpuredirect]');
-  if (pup) {
+  /* Sale prices are read-only at the POS (§25, extended §26 2026-09-28) — the pencil beside a line's rate
+     opens the product's Prices screen, a panel over the sale, so the draft is not touched just by looking.
+     Only that panel's own "Edit purchase / Edit receipt" links actually leave the sale, and they carry the
+     unsaved-draft warning themselves (21-settings.js). */
+  var pep = h('[data-fcpriceedit]');
+  if (pep) {
     e.preventDefault();
-    var pid = pup.dataset.fcpuredirect, pwh = pup.dataset.fcwh;
-    var goEditPurchase = function () {
-      var withPu = (ERP.S.purchaseItems || []).filter(function (it) { return it.productId === pid; })
-        .map(function (it) { return { it: it, pu: ERP.Purchases.byId(it.purchaseId) }; })
-        .filter(function (x) { return x.pu && x.pu.status !== 'CANCELLED'; });
-      if (!withPu.length) { say('No purchase found for this product yet.'); return; }
-      var sameWh = withPu.filter(function (x) { return x.it.warehouseId === pwh; });
-      var pick = (sameWh.length ? sameWh : withPu).sort(function (a, b) {
-        var ad = a.pu.updatedAt || a.pu.createdAt || '', bd = b.pu.updatedAt || b.pu.createdAt || '';
-        return ad < bd ? 1 : ad > bd ? -1 : 0;
-      })[0];
-      editPurchase(pick.pu.id);
-    };
-    if (B.dirty) {
-      ERP.UI.confirm('Leave this sale to edit the purchase?', {
-        detail: 'What you have entered on this sale so far has not been saved and will be lost.',
-        okText: 'Discard and continue', cancelText: 'Keep editing', tone: 'warn'
-      }).then(function (ok) { if (ok) goEditPurchase(); });
-    } else {
-      goEditPurchase();
-    }
+    ERP.openPriceEditor(pep.dataset.fcpriceedit);
     return;
   }
 
@@ -1066,7 +1046,9 @@ D.addEventListener('click', function (e) {
   if (del) {
     e.preventDefault();
     B.draft.items.splice(+del.dataset.fcdel, 1); B.dirty = true;
-    ERP.BuilderRender.lines(); return;
+    ERP.BuilderRender.lines();
+    if (B.mode === 'purchase' || B.mode === 'receive') ERP.BuilderRender.charges();
+    return;
   }
   var mv = h('[data-fcmove]');
   if (mv) {
@@ -1162,13 +1144,23 @@ D.addEventListener('input', function (e) {
   }
   if (el.dataset.fcb && B.draft) {
     var key = el.dataset.fcb;
-    if (['invoiceDiscount', 'freight', 'loading', 'otherCharges', 'otherChargesPerBag', 'sellingPrice', 'paidAmount'].indexOf(key) > -1) {
+    if (['invoiceDiscount', 'freight', 'loading', 'otherCharges', 'paidAmount'].indexOf(key) > -1) {
       B.draft[key] = el.value; B.dirty = true; ERP.BuilderUI.refreshTotals(); return;
     }
     if (['notes', 'description', 'referenceNo', 'orderNumber', 'dispatchNumber', 'salesperson',
          'supplierInvoiceNo', 'vehicleNo', 'driver', 'deliveryRef'].indexOf(key) > -1) {
       B.draft[key] = el.value; B.dirty = true; return;
     }
+  }
+  /* Extra cost / Selling price, typed once per product (§26, 2026-09-28) — purchase and Add stock share
+     this box. The caret would jump if the whole card re-rendered on every keystroke, so only the totals
+     and this one product's own summary line ("purchase + extra = cost … profit/bag") refresh live. */
+  if (el.dataset.fcprod && B.draft) {
+    var pid = el.dataset.pid, pk = el.dataset.fcprod;
+    var pp = B.draft.perProduct[pid] || (B.draft.perProduct[pid] = {});
+    pp[pk] = el.value; B.dirty = true;
+    ERP.BuilderUI.refreshTotals(); ERP.BuilderUI.refreshProdPriceLine(pid);
+    return;
   }
 });
 
@@ -1182,7 +1174,15 @@ D.addEventListener('change', function (e) {
     }
     B.draft[key] = el.value; B.dirty = true;
     if (key === 'warehouseId') {
-      B.draft.items.forEach(function (it) { it.warehouseId = el.value; });
+      B.draft.items.forEach(function (it) {
+        it.warehouseId = el.value;
+        /* the read-only sale rate is averaged per warehouse (§26) — moving the whole sale to another
+           warehouse must re-read it there, not keep the old one on screen */
+        if (B.mode === 'sale') {
+          var r = ERP.Inventory.sellOf(it.productId, el.value);
+          if (r > 0) it.unitPrice = M.toR(r);
+        }
+      });
       ERP.BuilderRender.header(); ERP.BuilderRender.lines(); return;
     }
     if (key === 'customerId' || key === 'supplierId' || key === 'invoiceId') {
@@ -1191,7 +1191,12 @@ D.addEventListener('change', function (e) {
     ERP.BuilderUI.refreshTotals(); return;
   }
   if (el.dataset.fcline === 'wh' && B.draft) {
-    B.draft.items[+el.dataset.ix].warehouseId = el.value; B.dirty = true;
+    var whIt = B.draft.items[+el.dataset.ix];
+    whIt.warehouseId = el.value; B.dirty = true;
+    if (B.mode === 'sale') {
+      var whRate = ERP.Inventory.sellOf(whIt.productId, el.value);
+      if (whRate > 0) whIt.unitPrice = M.toR(whRate);
+    }
     ERP.BuilderRender.lines(); return;
   }
   if (el.dataset.fcline === 'to' && B.draft) {
@@ -1460,6 +1465,19 @@ function cancelInvoice(id) {
   });
 }
 function editPaymentAmount(id) { EDITAMT_FOR = id; global.openPanel('editpayamt'); }
+/* the Purchases list ("Goods received") reuses the base page's own toolbar search — go there, then fill and
+   fire it exactly as the base app's own [data-goto] links do (§26, 2026-09-28: from the product Prices screen). */
+ERP.openPurchasesFor = function (pid) {
+  var p = global.prodOf ? global.prodOf(pid) : null;
+  var name = p ? (p.en || p.ur || '') : '';
+  global.go('purchases');
+  setTimeout(function () {
+    if (global.FIL) global.FIL.q = name;
+    var box = D.querySelector('[data-filter="tbl"]');
+    if (box) box.value = name;
+    if (global.applyFilters) global.applyFilters();
+  }, 60);
+};
 ERP.actions = { editInvoice: editInvoice, duplicateInvoice: duplicateInvoice, cancelInvoice: cancelInvoice,
                 changeInvoiceShop: changeInvoiceShop, editPurchase: editPurchase, backup: doBackup,
                 editPaymentAmount: editPaymentAmount };

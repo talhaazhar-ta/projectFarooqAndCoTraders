@@ -67,90 +67,68 @@ const run=async()=>{
   check('T1 two products: the discount (−1,000) and charges (+400) are shared by value — bags cost 4,962.5→4,963 and 2,977.5→2,978 (rounded)',
     Math.abs(i1.landedUnitCost-M.toP(4962.5))<=1 && Math.abs(i2.landedUnitCost-M.toP(2977.5))<=1, M.fmt(i1.landedUnitCost)+' / '+M.fmt(i2.landedUnitCost));
 
-  /* ── the screen explains itself and shows the cost of each bag live ── */
+  /* ── the purchase screen, simplified §26 (2026-09-28): no more Overall discount / Delivery / Loading /
+     Other charges boxes, no line Discount column — just the purchase price on the line, and extra cost /
+     selling price typed once per product below the table ── */
   ERP.Builder.start('purchase'); await sleep(250);
   const view=()=>$('#view').textContent.replace(/\s+/g,' ');
-  check('S1 the purchase screen explains Rate, Discount, Overall discount, the three charges and Amount paid in plain words',
-    /Rate = the price of ONE bag/.test(view()) && /money off that whole line \(not per bag\)/.test(view()) &&
-    /totals for the whole purchase/.test(view()) && /Amount paid = what you hand the supplier now for the whole purchase/.test(view()), view().slice(0,200));
-  check('S2 each charge box says it is the TOTAL for the whole purchase, not per bag',
-    (view().match(/NOT per bag/g)||[]).length>=3, String((view().match(/NOT per bag/g)||[]).length));
-  check('S3 …and where a truck or labour paid separately belongs (the product\'s Extra cost per bag)',
-    /Paid a truck or labour separately\?/.test(view()) && /Extra cost per bag/.test(view()));
-  /* the explanations sit behind a small round "i": closed until pressed, closed again by a second press */
-  const iBtns=Array.from(D.querySelectorAll('#view [data-fcinfo]'));
-  check('I1 the purchase screen has an "i" beside the card title and beside each of the six boxes',
-    iBtns.length>=6, String(iBtns.length));
-  const iBox=b=>D.getElementById(b.getAttribute('data-fcinfo'));
-  check('I2 every explanation starts hidden (nothing printed under the boxes)',
-    iBtns.every(b=>iBox(b) && !iBox(b).classList.contains('on') && b.getAttribute('aria-expanded')==='false'));
-  const chargeI=iBtns.find(b=>/NOT per bag/.test(iBox(b).textContent));
-  click(chargeI);
-  check('I3 pressing the "i" beside a charge box shows its explanation right there',
-    iBox(chargeI).classList.contains('on') && chargeI.getAttribute('aria-expanded')==='true' && /NOT per bag/.test(iBox(chargeI).textContent));
-  check('I4 …and only that one: the others stay closed', iBtns.filter(b=>iBox(b).classList.contains('on')).length===1);
-  click(chargeI);
-  check('I5 pressing it again hides it', !iBox(chargeI).classList.contains('on') && chargeI.getAttribute('aria-expanded')==='false');
-  const guideI=iBtns.find(b=>b.title==='How a purchase is worked out');
-  click(guideI);
-  check('I6 the "i" by "Charges & payment" opens the whole guide (Rate, Discount, Overall discount, charges, Amount paid)',
-    !!guideI && /Rate<\/b> = the price of ONE bag|Rate = the price of ONE bag/.test(iBox(guideI).textContent) && iBox(guideI).classList.contains('on'));
-  click(guideI);
-  check('S4 with no product yet the cost box says to add one', /Add a product to see what each bag will really cost you/.test($('#fcbCpb').textContent));
+  check('S1 the old charge boxes are gone from the screen',
+    !/Overall discount/.test(view()) && !/Delivery \/ freight/.test(view()) && !/Loading \/ unloading/.test(view()));
+  check('S2 the items table has no Discount column any more', !$('#view th')||!Array.from(D.querySelectorAll('#view th')).some(th=>th.textContent.trim()==='Discount'));
+  const rateHead=Array.from(D.querySelectorAll('#view th')).find(th=>/Purchase price/.test(th.textContent));
+  check('S3 the price column is labelled "Purchase price" (not "Rate") with an "i" beside it',
+    !!rateHead && !!rateHead.querySelector('[data-fcinfo]'));
+
   const Bd=ERP.Builder.draft; Bd.supplierId=mill; Bd.warehouseId=wh;
   win.ERP.BuilderUI.addLine(P[8].id); await sleep(150);
-  Bd.items[0].quantity='5'; Bd.items[0].unitPrice='6000'; Bd.otherCharges='200'; win.ERP.BuilderUI.refreshTotals();
-  let box=$('#fcbCpb').textContent.replace(/\s+/g,' ');
-  check('S5 typing 200 as Other charges for 5 bags shows: each bag costs 6,040 (charges 40 = 200 ÷ 5 bags)',
-    /each bag costs PKR 6,040/.test(box) && /charges PKR 40/.test(box) && /PKR 200 ÷ 5 bags/.test(box), box);
-  Bd.invoiceDiscount='500'; win.ERP.BuilderUI.refreshTotals();
-  box=$('#fcbCpb').textContent.replace(/\s+/g,' ');
-  check('S6 adding an overall discount of 500 lowers it to 5,940 and says the price is 5,900 after discounts',
-    /each bag costs PKR 5,940/.test(box) && /PKR 5,900 after discounts/.test(box), box);
-  check('S7 the screen\'s figure is exactly what the save then stores (5,940)',
-    (await ERP.Purchases.save(Object.assign({},Bd,{id:undefined,clientOpId:undefined})).then(r=>ERP.Purchases.items(r.id)[0].landedUnitCost,()=>0))===M.toP(5940));
+  Bd.items[0].quantity='5'; Bd.items[0].unitPrice='6000';
+  const extraBox=()=>$('[data-fcprod="extraPerBag"][data-pid="'+P[8].id+'"]');
+  const sellBox=()=>$('[data-fcprod="sellPerBag"][data-pid="'+P[8].id+'"]');
+  check('S4 the per-product Extra cost / Selling price boxes are on screen', !!extraBox() && !!sellBox());
+  type(extraBox(),'40'); type(sellBox(),'6100'); win.ERP.BuilderUI.refreshTotals();
+  const prodLine=()=>D.querySelector('.fcb-prodprice').textContent.replace(/\s+/g,' ');
+  check('S5 the per-product line works out purchase + extra = cost, and the profit per bag',
+    /6,000/.test(prodLine()) && /40/.test(prodLine()) && /6,040/.test(prodLine()) && /6,100/.test(prodLine()) && /60/.test(prodLine()), prodLine());
+  type(sellBox(),'5000');
+  check('S6 a selling price below cost is refused at Save, before anything is written',
+    (click($('[data-fcbact="save"]')), /below what a bag costs/i.test($('#fcbErr').textContent)), $('#fcbErr').textContent);
+  type(sellBox(),'6100');
+  const savedPu=await new Promise(res=>{
+    const origSave=ERP.Purchases.save;
+    ERP.Purchases.save=function(d){ ERP.Purchases.save=origSave; return origSave.call(ERP.Purchases,d).then(r=>{res(r);return r;}); };
+    click($('[data-fcbact="save"]'));
+  });
+  const savedItem=ERP.Purchases.items(savedPu.id)[0];
+  check('S7 Save keeps the purchase price on the line (6,000) and the typed extra/sell on the line too',
+    savedItem.unitPrice===M.toP(6000) && savedItem.extraUnitP===M.toP(40) && savedItem.sellUnitP===M.toP(6100),
+    savedItem.unitPrice+' / '+savedItem.extraUnitP+' / '+savedItem.sellUnitP);
+  check('S8 the stock now averages 6,000 purchase + 40 extra = 6,040 cost, and sells at 6,100',
+    ERP.Inventory.costOf(P[8].id,wh)===M.toP(6000) && ERP.Inventory.extraFor(P[8].id,wh)===M.toP(40) &&
+    ERP.Inventory.sellOf(P[8].id,wh)===M.toP(6100));
 
-  /* ── the product's price screen shows the same cost, with the charges from the purchase in it ── */
+  /* ── the product's Prices screen: the same three averages, simplified §26 — no more per-purchase
+     "Change" buttons or the old "already carries transport" banner, but the purchase itself is listed
+     with an Edit link ── */
   ERP.openPriceEditor(A.id); await sleep(300);
-  const rows=$('#pzCalcRows').textContent.replace(/\s+/g,' ');
-  check('P1 the price screen lists: purchase price 6,000 + charges on the purchase 40 = total cost per bag 6,040',
-    /Purchase price\s*PKR 6,000/.test(rows) && /\+ Charges on the purchase\s*PKR 40/.test(rows) && /= Total cost per bag\s*PKR 6,040/.test(rows), rows);
+  check('P1 "Average purchase price" reflects the stock on hand (6,040 — A\'s earlier purchase with charges)',
+    $('#panel [data-f="buy"]').value==='6040', $('#panel [data-f="buy"]').value);
   type($('#panel [data-f="sell"]'),'6300');
+  const rows=()=>$('#pzCalcRows').textContent.replace(/\s+/g,' ');
   check('P2 at a selling price of 6,300 it shows the profit a sale will really show: 260 a bag',
-    /Profit per bag\s*PKR 260/.test($('#pzCalcRows').textContent.replace(/\s+/g,' ')), $('#pzCalcRows').textContent.replace(/\s+/g,' '));
-  check('P3 the banner says the charges are 40 a bag, from the purchase',
-    /already carry PKR 40 per bag/.test($('#pzLanded').textContent.replace(/\s+/g,' ')), $('#pzLanded') && $('#pzLanded').textContent);
-  check('P4 the Purchase price hint says where the number comes from',
-    /reference price/.test($('#panel').textContent) && /each purchase really cost/.test($('#panel').textContent));
-  const pI=Array.from(D.querySelectorAll('#panel [data-fcinfo]'));
-  check('P5 the price screen\'s explanations are behind "i" buttons too (purchase price, extra cost, selling price, minimum)', pI.length>=4, String(pI.length));
-  const buyI=pI.find(b=>/reference price/.test(D.getElementById(b.getAttribute('data-fcinfo')).textContent));
-  check('P6 the one for Purchase price is closed, then opens on a press',
-    !D.getElementById(buyI.getAttribute('data-fcinfo')).classList.contains('on') && (click(buyI), D.getElementById(buyI.getAttribute('data-fcinfo')).classList.contains('on')));
-  check('P7 a warning that matters stays visible without pressing anything (the "counted twice" banner is not behind an i)',
-    !!$('#pzLanded') && !$('#pzLanded').closest('.fc-info'));
-  /* the two summary lines look like boxes; each now has a Change button that leads to where the figure really is edited (client: "unable to edit") */
-  const chg=Array.from(D.querySelectorAll('#pzCalcRows [data-pzedit]'));
-  check('P8 the "Charges on the purchase" and "Extra cost" lines each carry a Change button',
-    chg.length===2 && chg.map(b=>b.dataset.pzedit).join()==='charges,extra', chg.map(b=>b.dataset.pzedit).join());
-  click(chg.find(b=>b.dataset.pzedit==='extra'));
-  check('P9 Change beside Extra cost puts the cursor in the Extra cost box', D.activeElement===$('#panel [data-f="extra"]'));
-  check('P10 the Change button survives typing (the lines are redrawn on every keystroke)',
-    (type($('#panel [data-f="extra"]'),'50'), D.querySelectorAll('#pzCalcRows [data-pzedit]').length===2));
-  let openedPu=null; const realEdit0=win.ERP.actions.editPurchase; win.ERP.actions.editPurchase=id=>{openedPu=id;};
-  click(D.querySelector('#pzCalcRows [data-pzedit="charges"]'));
-  win.ERP.actions.editPurchase=realEdit0;
-  check('P10b with a typed but unsaved price (Extra 50) the charges Change does NOT close the screen or lose it',
-    openedPu===null && !!D.querySelector('#panel.on [data-f="extra"]') && $('#panel [data-f="extra"]').value==='50', String(openedPu));
-  type($('#panel [data-f="extra"]'),'0'); type($('#panel [data-f="sell"]'),'');
-  const realEdit=win.ERP.actions.editPurchase; win.ERP.actions.editPurchase=id=>{openedPu=id;};
-  click(D.querySelector('#pzCalcRows [data-pzedit="charges"]'));
+    /Profit per bag\s*PKR 260/.test(rows()), rows());
+  check('P3 no old-style "Change" buttons or landed-charges banner on this simplified panel',
+    D.querySelectorAll('#pzCalcRows [data-pzedit="charges"]').length===0 && !$('#pzLanded'));
+  ERP.openPriceEditor(A.id); await sleep(300);   // fresh — nothing typed, so the Edit link below is free to navigate
+  const txRows=Array.from(D.querySelectorAll('#panel .pz-h'));
+  check('P4 the purchase that priced this product is listed, with an Edit link',
+    txRows.some(r=>/PUR-/.test(r.textContent)) && !!D.querySelector('#panel [data-pztxedit="purchase"]'));
+  let openedPu=null; const realEdit=win.ERP.actions.editPurchase; win.ERP.actions.editPurchase=id=>{openedPu=id;};
+  click(D.querySelector('#panel [data-pztxedit="purchase"]'));
   win.ERP.actions.editPurchase=realEdit;
-  check('P11 Change beside the charges opens that purchase for editing', !!openedPu && !!ERP.Purchases.byId(openedPu) && ERP.Purchases.byId(openedPu).otherCharges===M.toP(200), String(openedPu));
+  check('P5 pressing Edit on a purchase row opens that purchase for editing', !!openedPu && !!ERP.Purchases.byId(openedPu));
   ERP.openPriceEditor(A.id); await sleep(300);
   const nothing=win.PANELS.prices.save({});
-  check('P12 pressing Save with no box changed says what to do and that the charges line is not a box (names the purchase)',
-    typeof nothing==='string' && /Type a new figure in a box/.test(nothing) && /not a box/.test(nothing) && /PUR-/.test(nothing), String(nothing));
+  check('P6 pressing Save with nothing changed says so', typeof nothing==='string' && /Nothing to save/.test(nothing), String(nothing));
   check('X nothing threw', errors.length===0, errors.slice(0,2).join(' | '));
   win.close();
   console.log('\n'+out.join('\n')+'\n\n'+pass+' passed, '+fail+' failed\n');

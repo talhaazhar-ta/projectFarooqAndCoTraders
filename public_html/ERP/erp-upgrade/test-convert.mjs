@@ -148,10 +148,10 @@ const run = async () => {
     INV.row(pD.id, wh).avgCostP === M.toP(2600) && INV.available(pD.id, wh) === 100, String(INV.row(pD.id, wh).avgCostP));
   check('C23c …and the total stock value is unchanged', totalP() === vD0, `${vD0} → ${totalP()}`);
 
-  /* bags that came in through Add stock with a typed cost keep no average, only the cost on the movement:
-     the conversion must still pass that cost on (the Stock value screen shows it) */
+  /* 2026-09-28 (§26): Add stock with a typed cost now blends into the recorded average too, the same as a
+     purchase — the conversion must still pass that cost on (the Stock value screen shows it) */
   await SD.receive({ warehouseId: wh, reason: 'own production', date: '2026-09-03', items: [{ productId: pF.id, quantity: 50, unitPrice: 1800 }] });
-  check('C23d setup: Add stock leaves no recorded average', INV.row(pF.id, wh).avgCostP === 0);
+  check('C23d setup: Add stock now blends into the recorded average', INV.row(pF.id, wh).avgCostP === M.toP(1800));
   const vF0 = totalP();
   const recF = await SD.convert({ warehouseId: wh, date: '2026-09-07', items: [{ productId: pF.id, toProductId: pG.id, quantity: 30 }] });
   const mvF = ERP.S.movements.filter(m => m.ref === recF.docNumber);

@@ -35,7 +35,7 @@ var ENUM = ERP.ENUM = {
              'SALE_REVERSAL_IN', 'PURCHASE_REVERSAL_OUT', 'REPLACEMENT_OUT', 'SUPPLIER_REPLACEMENT_IN',
              'STOCK_WRITE_OFF', 'DISPATCH_OUT',
              'MILL_ISSUE_OUT', 'MILL_RECEIPT_IN', 'MILL_ISSUE_REVERSAL_IN', 'MILL_RECEIPT_REVERSAL_OUT',
-             'CONVERT_OUT', 'CONVERT_IN', 'RECEIPT_EDIT_OUT'],
+             'CONVERT_OUT', 'CONVERT_IN', 'RECEIPT_EDIT_OUT', 'REVALUE'],
   /* what physically happens to a returned bag */
   returnCondition: ['SELLABLE', 'DAMAGED', 'DEFECTIVE', 'WRONG_ITEM', 'EXPIRED', 'OTHER'],
   /* what happens to the money */
@@ -117,9 +117,18 @@ var Audit = ERP.Audit = {
    ══════════════════════════════════════════════════════════════════════════ */
 /* stock movements that bring NEW bags in (they carry the product's extra cost of that day) and the reversals that
    take such bags back out — see Inventory.rowExtraP. Returns, sale reversals and mill-issue reversals put bags back
-   that already had a cost, so they are not in either list. */
+   that already had a cost, so they are not in either list. Extra cost and selling price are blended the same
+   way and follow the same two lists (§26). */
 var EXTRA_FRESH_IN = { PURCHASE_IN: 1, MILL_RECEIPT_IN: 1, OPENING_STOCK: 1, ADJUSTMENT_IN: 1, SUPPLIER_REPLACEMENT_IN: 1 };
 var EXTRA_UNDO_OUT = { PURCHASE_REVERSAL_OUT: 1, RECEIPT_EDIT_OUT: 1, MILL_RECEIPT_REVERSAL_OUT: 1 };
+/* 2026-09-28: the purchase price itself now blends this way too, but ONLY for a stock receipt (Add stock) —
+   a plain stock Adjustment is not a price event. PURCHASE_IN / MILL_RECEIPT_IN already blended before this
+   change and still do, unconditionally. */
+function isFreshCostIn(mv) {
+  return mv.kind === 'PURCHASE_IN' || mv.kind === 'MILL_RECEIPT_IN' ||
+    ((mv.kind === 'ADJUSTMENT_IN' || mv.kind === 'OPENING_STOCK') && mv.refType === 'STOCK_RECEIPT');
+}
+var COST_UNDO_OUT = { PURCHASE_REVERSAL_OUT: 1, RECEIPT_EDIT_OUT: 1, MILL_RECEIPT_REVERSAL_OUT: 1 };
 var Inventory = ERP.Inventory = {
   row: function (pid, wid) {
     var k = ikey(pid, wid);
@@ -192,6 +201,51 @@ var Inventory = ERP.Inventory = {
     if (basis === 'PURCHASE') return 0;
     return Inventory.rowExtraP(pid, wid);
   },
+  /* 2026-09-28: the selling price on a new invoice, and on the product Prices screen, is now the bag-weighted
+     average of the stock on hand — the same figure Prices.set / Purchases.save / StockDocs.receive all keep
+     up to date (see rowSellP / apply below), mirroring extraOf/rowExtraP exactly. */
+  rawSellOf: function (pid) {
+    var p = global.prodOf && global.prodOf(pid);
+    if (!p) return 0;
+    var x = p.sellP !== undefined && p.sellP !== null ? Number(p.sellP) : (p.sell ? M.toP(p.sell) : 0);
+    return x > 0 ? x : 0;
+  },
+  rowSellP: function (pid, wid) {
+    var r = wid ? S.inventory[ikey(pid, wid)] : null;
+    return r && typeof r.avgSellP === 'number' ? r.avgSellP : Inventory.rawSellOf(pid);
+  },
+  /* the rate a new invoice line for this product, out of this warehouse, opens with */
+  sellOf: function (pid, wid) {
+    var r = wid ? S.inventory[ikey(pid, wid)] : null;
+    if (r && r.qty > 0 && typeof r.avgSellP === 'number' && r.avgSellP > 0) return r.avgSellP;
+    var any = 0;
+    Object.keys(S.inventory).forEach(function (k) {
+      var row = S.inventory[k];
+      if (row.productId === pid && row.qty > 0 && row.avgSellP) any = any || row.avgSellP;
+    });
+    if (any) return any;
+    return Inventory.rawSellOf(pid);
+  },
+  /* the bag-weighted purchase price / extra cost / selling price of the stock actually on hand, across every
+     warehouse — what the simplified product Prices screen shows and revalues, and what a multi-warehouse
+     product's sale line falls back to with no warehouse-specific average yet. `bags` is 0 (and the figures
+     fall back to the product's own saved buy/extra/sell) when nothing is in stock. */
+  averages: function (pid) {
+    var qty = 0, costV = 0, extraV = 0, sellV = 0;
+    Object.keys(S.inventory).forEach(function (k) {
+      var r = S.inventory[k];
+      if (r.productId !== pid || !(r.qty > 0)) return;
+      var c = r.avgCostP || Inventory.carriedCost(pid, r.warehouseId) || 0;
+      var e = typeof r.avgExtraP === 'number' ? r.avgExtraP : Inventory.rawExtraOf(pid);
+      var s = typeof r.avgSellP === 'number' ? r.avgSellP : Inventory.rawSellOf(pid);
+      qty += r.qty; costV += c * r.qty; extraV += e * r.qty; sellV += s * r.qty;
+    });
+    if (!qty) {
+      var p = global.prodOf && global.prodOf(pid);
+      return { cost: p && p.buy ? M.toP(p.buy) : 0, extra: Inventory.rawExtraOf(pid), sell: Inventory.rawSellOf(pid), bags: 0 };
+    }
+    return { cost: Math.round(costV / qty), extra: Math.round(extraV / qty), sell: Math.round(sellV / qty), bags: qty };
+  },
   /* what one bag of a sale is costed at: the stock cost plus the extra cost per bag. An unknown stock
      cost stays unknown (0) — the extra alone is not a cost price and would show a made-up profit. */
   saleCostOf: function (pid, wid) {
@@ -225,11 +279,32 @@ var Inventory = ERP.Inventory = {
     if (mv.bucket === 'damaged') r.damagedQty = Math.round((r.damagedQty + delta) * 1000) / 1000;
     else r.qty = Math.round((r.qty + delta) * 1000) / 1000;
 
-    if ((mv.kind === 'PURCHASE_IN' || mv.kind === 'MILL_RECEIPT_IN') && mv.unitCostP) {  // moving average cost (§41)
-      var before = r.qty - delta, prev = r.avgCostP || 0;
-      r.avgCostP = before > 0
+    if (mv.kind === 'REVALUE') {
+      /* the product Prices screen, revaluing the bags already on hand (§26, 2026-09-28) — a direct SET, never
+         a blend: qtyDelta is always 0, so the ordinary moving-average formula would leave every figure
+         unchanged (0 bags "coming in" contribute nothing to a weighted average). */
+      if (typeof mv.unitCostP === 'number') r.avgCostP = mv.unitCostP;
+      if (typeof mv.extraCostP === 'number') r.avgExtraP = mv.extraCostP;
+      if (typeof mv.sellP === 'number') r.avgSellP = mv.sellP;
+      api.put('inventory', r);
+      return applyRecord(api, mv, r, delta);
+    }
+    if (isFreshCostIn(mv) && mv.unitCostP) {  // moving average cost (§41), and Add stock since 2026-09-28 (§26)
+      var before = r.qty - delta;
+      /* a row that has never blended a recorded cost (all its stock came in through Add stock, before this
+         change) follows its carried cost instead of an assumed 0 — otherwise the first purchase or receipt
+         after this deploy would wrongly dilute the average toward zero for the bags already on hand */
+      var prev = typeof r.avgCostP === 'number' && r.avgCostP > 0 ? r.avgCostP
+        : Inventory.carriedCost(mv.productId, mv.warehouseId);
+      r.avgCostP = before > 0 && prev > 0
         ? Math.round((before * prev + delta * mv.unitCostP) / (before + delta))
         : mv.unitCostP;
+    } else if (delta < 0 && mv.kind && COST_UNDO_OUT[mv.kind] && typeof mv.unitCostP === 'number' &&
+               mv.unitCostP > 0 && r.qty > 0 && typeof r.avgCostP === 'number' && r.avgCostP > 0) {
+      /* a reversal / receipt edit takes bags back out at the cost they came in with, so re-posting them does
+         not re-price the bags that were already there (mirrors the avgExtraP undo just below) */
+      var outQ = -delta;
+      r.avgCostP = Math.max(0, Math.round(((r.qty + outQ) * r.avgCostP - outQ * mv.unitCostP) / r.qty));
     } else if (mv.kind === 'CONVERT_IN' && mv.unitCostP > 0 && mv.bucket !== 'damaged') {
       /* a brand conversion brings bags in at the SOURCE's cost. Blend them into the target's average so the total value
          does not move; a target that has bags but no recorded average keeps none (Stock value carries the cost instead,
@@ -253,35 +328,54 @@ var Inventory = ERP.Inventory = {
         var exOut = -delta;
         r.avgExtraP = Math.max(0, Math.round(((r.qty + exOut) * r.avgExtraP - exOut * exGiven) / r.qty));
       }
+      /* the selling price on hand (Inventory.rowSellP) — blended exactly like the extra cost, on the same
+         inbound/undo movement kinds, since both are set on the purchase / stock-receipt line alongside the
+         purchase price (§26, 2026-09-28). */
+      var sellGiven = typeof mv.sellP === 'number' ? mv.sellP : null;
+      if (delta > 0 && (sellGiven !== null || EXTRA_FRESH_IN[mv.kind])) {
+        var sellIn = sellGiven !== null ? sellGiven : Inventory.rawSellOf(mv.productId);
+        var sellHad = r.qty - delta;
+        var sellPrev = typeof r.avgSellP === 'number' ? r.avgSellP : Inventory.rawSellOf(mv.productId);
+        r.avgSellP = sellHad > 0 ? Math.round((sellHad * sellPrev + delta * sellIn) / (sellHad + delta)) : sellIn;
+      } else if (delta < 0 && sellGiven !== null && EXTRA_UNDO_OUT[mv.kind] &&
+                 r.qty > 0 && typeof r.avgSellP === 'number') {
+        var sellOut = -delta;
+        r.avgSellP = Math.max(0, Math.round(((r.qty + sellOut) * r.avgSellP - sellOut * sellGiven) / r.qty));
+      }
     }
     api.put('inventory', r);
-
-    var rec = {
-      id: FDB.uid('mv'), createdAt: nowISO(), date: mv.date || todayISO(),
-      productId: mv.productId, warehouseId: mv.warehouseId, kind: mv.kind,
-      qtyDelta: delta, bucket: mv.bucket || 'stock', balanceAfter: (mv.bucket === 'damaged' ? r.damagedQty : r.qty),
-      ref: mv.ref || '', refType: mv.refType || '', note: mv.note || '',
-      unitCostP: mv.unitCostP || 0, userId: currentUser()
-    };
-    api.put('stockMovements', rec);
-    S.movements.unshift(rec);
-    if (S.movements.length > 8000) S.movements.length = 8000;
-
-    /* keep the original screens' stock map and history in step */
-    if (mv.bucket !== 'damaged' && global.STOCKMAP) {
-      global.STOCKMAP[ikey(mv.productId, mv.warehouseId)] = r.qty;
-    }
-    if (global.MOVES) {
-      global.MOVES.unshift({
-        id: 'MV-' + rec.id.slice(-6).toUpperCase(), t: (global.stamp ? global.stamp() : ''),
-        iso: rec.date, pid: mv.productId, wid: mv.warehouseId, delta: delta,
-        kind: Movements.label(mv.kind), ref: mv.ref || '', note: mv.note || '', by: currentUser()
-      });
-      if (global.MOVES.length > 4000) global.MOVES.length = 4000;
-    }
-    return rec;
+    return applyRecord(api, mv, r, delta);
   }
 };
+
+/* the movement record + stock-map/history mirrors, shared by the ordinary path above and the REVALUE
+   early-return (a direct set has nothing else to do first) */
+function applyRecord(api, mv, r, delta) {
+  var rec = {
+    id: FDB.uid('mv'), createdAt: nowISO(), date: mv.date || todayISO(),
+    productId: mv.productId, warehouseId: mv.warehouseId, kind: mv.kind,
+    qtyDelta: delta, bucket: mv.bucket || 'stock', balanceAfter: (mv.bucket === 'damaged' ? r.damagedQty : r.qty),
+    ref: mv.ref || '', refType: mv.refType || '', note: mv.note || '',
+    unitCostP: mv.unitCostP || 0, userId: currentUser()
+  };
+  api.put('stockMovements', rec);
+  S.movements.unshift(rec);
+  if (S.movements.length > 8000) S.movements.length = 8000;
+
+  /* keep the original screens' stock map and history in step */
+  if (mv.bucket !== 'damaged' && global.STOCKMAP) {
+    global.STOCKMAP[ikey(mv.productId, mv.warehouseId)] = r.qty;
+  }
+  if (global.MOVES) {
+    global.MOVES.unshift({
+      id: 'MV-' + rec.id.slice(-6).toUpperCase(), t: (global.stamp ? global.stamp() : ''),
+      iso: rec.date, pid: mv.productId, wid: mv.warehouseId, delta: delta,
+      kind: Movements.label(mv.kind), ref: mv.ref || '', note: mv.note || '', by: currentUser()
+    });
+    if (global.MOVES.length > 4000) global.MOVES.length = 4000;
+  }
+  return rec;
+}
 
 var Movements = ERP.Movements = {
   label: function (k) {
@@ -297,7 +391,7 @@ var Movements = ERP.Movements = {
       MILL_ISSUE_OUT: 'Issued for milling', MILL_RECEIPT_IN: 'Received from mill',
       MILL_ISSUE_REVERSAL_IN: 'Milling issue reversed', MILL_RECEIPT_REVERSAL_OUT: 'Milling receipt reversed',
       CONVERT_OUT: 'Converted to another brand', CONVERT_IN: 'Converted from another brand',
-      RECEIPT_EDIT_OUT: 'Stock receipt edited (old lines reversed)'
+      RECEIPT_EDIT_OUT: 'Stock receipt edited (old lines reversed)', REVALUE: 'Prices revalued'
     })[k] || k;
   }
 };
@@ -398,8 +492,46 @@ var Validate = ERP.Validate = {
     var items = (draft.items || []).filter(function (i) { return i.productId; });
     if (!items.length) errs.push('Add at least one product line.');
     items.forEach(function (it, i) {
-      if (!(M.qty(it.quantity) > 0)) errs.push('Line ' + (i + 1) + ': quantity must be more than zero.');
-      if (M.toP(it.unitPriceR !== undefined ? it.unitPriceR : it.unitPrice) < 0) errs.push('Line ' + (i + 1) + ': invalid rate.');
+      var q = M.qty(it.quantity);
+      if (!(q > 0)) errs.push('Line ' + (i + 1) + ': quantity must be more than zero.');
+      /* the purchase price is required at the SCREEN (05-ui-builder.js B.save checks it synchronously
+         before Save is even pressed) — kept only non-negative here, since this function is also the
+         data-setup path every test in the suite uses, many with no price at all */
+      var rate = M.toP(it.unitPriceR !== undefined ? it.unitPriceR : it.unitPrice);
+      if (rate < 0) errs.push('Line ' + (i + 1) + ': invalid purchase price.');
+      if (it.receivedQty !== undefined && it.receivedQty !== '') {
+        var recv = M.qty(it.receivedQty);
+        if (recv < 0) errs.push('Line ' + (i + 1) + ': Received cannot be negative.');
+        if (recv > q) errs.push('Line ' + (i + 1) + ': Received (' + recv + ') cannot be more than Ordered (' + q + ').');
+      }
+    });
+    return errs.concat(Validate.perProductPricing(items));
+  },
+  /* Selling price is typed once per PRODUCT (the purchase / Add stock screens group their lines that way) and
+     must cover what a bag of it actually costs — the purchase price averaged over that product's lines here,
+     plus the extra cost typed alongside it. Shared by a new purchase and a stock receipt (§26, 2026-09-28). */
+  perProductPricing: function (items) {
+    var errs = [], byProduct = {};
+    items.forEach(function (it) {
+      if (!it.productId) return;
+      var q = M.qty(it.quantity);
+      if (!(q > 0)) return;
+      var g = byProduct[it.productId] || (byProduct[it.productId] = { qty: 0, value: 0, extraPerBag: it.extraPerBag, sellPerBag: it.sellPerBag });
+      g.qty += q; g.value += q * M.toP(it.unitPriceR !== undefined ? it.unitPriceR : it.unitPrice);
+    });
+    Object.keys(byProduct).forEach(function (pid) {
+      var g = byProduct[pid];
+      if (!(M.toP(g.sellPerBag) > 0)) return;   /* blank AND an explicit 0 both mean "no selling price typed here" */
+      var sell = M.toP(g.sellPerBag);
+      var extra = g.extraPerBag !== undefined && g.extraPerBag !== '' ? M.toP(g.extraPerBag) : 0;
+      var avgPrice = g.qty ? Math.round(g.value / g.qty) : 0;
+      var cost = avgPrice + extra;
+      if (sell < cost) {
+        var p = global.prodOf && global.prodOf(pid);
+        errs.push((p ? (p.en || p.ur) : pid) + ': the selling price ' + M.fmt(sell) +
+          ' is below what a bag costs (purchase ' + M.fmt(avgPrice) + (extra ? ' + extra ' + M.fmt(extra) : '') +
+          ' = ' + M.fmt(cost) + ').');
+      }
     });
     return errs;
   }
@@ -489,6 +621,11 @@ var Invoices = ERP.Invoices = {
       unit: it.unit || 'Bag',
       quantity: it.quantity, unitPrice: it.unitPrice, discount: it.discount,
       tax: it.tax, lineTotal: it.lineTotal,
+      /* costSnapshot stays the sum of the two, for every existing report that already reads it; the split is
+         new (§26, 2026-09-28) so Profit & margin can show the written sum the client asked for — Purchase
+         price + Extra cost = Total — instead of only the total. */
+      costBuySnapshot: Inventory.costOf(it.productId, wid),
+      costExtraSnapshot: Inventory.extraFor(it.productId, wid),
       costSnapshot: Inventory.saleCostOf(it.productId, wid),
       warehouseId: wid, batchNo: it.batchNo || '', notes: it.notes || '',
       returnedQty: 0
@@ -614,10 +751,26 @@ var Invoices = ERP.Invoices = {
 
         /* line items — remove the old set, write the new one */
         var oldItems = Invoices.items(rec.id);
+        /* an edit re-snapshots every line at TODAY's cost (found 2026-09-28 while adding the cost split
+           above) — for a product+warehouse that was already on the invoice, keep the cost it was actually
+           sold at instead, so editing a note or a payment on an old invoice never silently rewrites its
+           profit just because the stock average has since moved. A genuinely new line still gets today's. */
+        var oldCostByKey = {};
+        oldItems.forEach(function (o) {
+          var k = o.productId + '|' + o.warehouseId;
+          if (!(k in oldCostByKey)) oldCostByKey[k] = o;
+        });
         oldItems.forEach(function (o) { api.del('invoiceItems', o.id); });
         S.invoiceItems = S.invoiceItems.filter(function (i) { return i.invoiceId !== rec.id; });
         var itemRecs = totals.items.map(function (it, ix) {
           var r = Invoices.snapshotItem(Object.assign({}, it, { id: null }), { id: rec.id, warehouseId: rec.warehouseId }, ix);
+          var kept = oldCostByKey[it.productId + '|' + r.warehouseId];
+          if (kept) {
+            r.costBuySnapshot = typeof kept.costBuySnapshot === 'number' ? kept.costBuySnapshot : kept.costSnapshot;
+            r.costExtraSnapshot = typeof kept.costExtraSnapshot === 'number' ? kept.costExtraSnapshot : 0;
+            r.costSnapshot = kept.costSnapshot;
+            delete oldCostByKey[it.productId + '|' + r.warehouseId];   /* one old line's cost goes to one new line, never two */
+          }
           api.put('invoiceItems', r); S.invoiceItems.push(r); return r;
         });
 
@@ -1163,7 +1316,9 @@ var Purchases = ERP.Purchases = {
           unitPrice: M.toR(it.unitPrice), discount: M.toR(it.discount), tax: M.toR(it.tax),
           /* blank means "the whole line arrived" — only a part delivery is spelled out */
           receivedQty: recv >= it.quantity ? '' : recv,
-          warehouseId: it.warehouseId, batchNo: it.batchNo, notes: it.notes, unit: it.unit
+          warehouseId: it.warehouseId, batchNo: it.batchNo, notes: it.notes, unit: it.unit,
+          extraPerBag: it.extraUnitP > 0 ? M.toR(it.extraUnitP) : '',
+          sellPerBag: it.sellUnitP > 0 ? M.toR(it.sellUnitP) : ''
         };
       })
     };
@@ -1244,9 +1399,10 @@ var Purchases = ERP.Purchases = {
 
         /* the extra cost per bag each old line came in with (a line saved before this existed: what its row
            carries now), so an edit takes exactly that back out and puts the same back in */
-        var oldExtra = {};
+        var oldExtra = {}, oldSell = {};
         oldItems.forEach(function (o) {
           oldExtra[o.id] = typeof o.extraUnitP === 'number' ? o.extraUnitP : Inventory.rowExtraP(o.productId, o.warehouseId);
+          oldSell[o.id] = typeof o.sellUnitP === 'number' ? o.sellUnitP : Inventory.rowSellP(o.productId, o.warehouseId);
         });
         if (existing) {
           /* what actually arrived comes back out — judged per line, because a later
@@ -1257,7 +1413,10 @@ var Purchases = ERP.Purchases = {
             var was = o.receivedQty === undefined ? o.quantity : o.receivedQty;
             if (!(was > 0)) return;
             Inventory.apply(api, { productId: o.productId, warehouseId: o.warehouseId,
-              qtyDelta: -was, extraCostP: oldExtra[o.id],
+              qtyDelta: -was, extraCostP: oldExtra[o.id], sellP: oldSell[o.id],
+              /* the cost these bags actually blended into avgCostP with: the landed figure once charges were
+                 allocated onto it (17-profit.js), else the raw purchase price */
+              unitCostP: o.landedUnitCost || o.unitPrice,
               kind: 'PURCHASE_REVERSAL_OUT', ref: existing.purchaseNumber, refType: 'PURCHASE_EDIT',
               note: 'Reversed on purchase edit', date: existing.purchaseDate || rec.purchaseDate });
           });
@@ -1283,13 +1442,21 @@ var Purchases = ERP.Purchases = {
             warehouseId: it.warehouseId || rec.warehouseId, batchNo: it.batchNo || '',
             returnedQty: old ? Purchases.returnedQty(old.id) : 0, notes: it.notes || ''
           });
-          /* the extra cost per bag these bags come in with: the product's figure of the day for a new line, the
-             line's own for one the edit keeps (unless it is now a different product) */
-          r.extraUnitP = old && old.productId === r.productId ? oldExtra[old.id] : Inventory.rawExtraOf(r.productId);
+          /* Extra cost / selling price per bag, typed once per PRODUCT on the purchase screen (§26, 2026-09-28):
+             a figure typed this time wins; an edit that leaves a line's own values untouched keeps them; a
+             brand-new line falls to the product's own saved figures. */
+          var typedExtra = it.extraPerBag !== undefined && it.extraPerBag !== '' ? M.toP(it.extraPerBag) : null;
+          var typedSell  = it.sellPerBag  !== undefined && it.sellPerBag  !== ''  ? M.toP(it.sellPerBag)  : null;
+          var keptLine = old && old.productId === r.productId;
+          r.extraUnitP = typedExtra !== null ? typedExtra
+            : (keptLine ? oldExtra[old.id] : Inventory.rawExtraOf(r.productId));
+          r.sellUnitP = typedSell !== null ? typedSell
+            : (keptLine ? oldSell[old.id] : Inventory.rawSellOf(r.productId));
           api.put('purchaseItems', r); S.purchaseItems.push(r);
           if (receivedQty > 0) {
             Inventory.apply(api, {
-              productId: r.productId, warehouseId: r.warehouseId, qtyDelta: receivedQty, extraCostP: r.extraUnitP,
+              productId: r.productId, warehouseId: r.warehouseId, qtyDelta: receivedQty,
+              extraCostP: r.extraUnitP, sellP: r.sellUnitP,
               kind: 'PURCHASE_IN', ref: rec.purchaseNumber, refType: 'PURCHASE',
               note: rec.supplierNameSnapshot, date: rec.purchaseDate, unitCostP: r.unitPrice
             });
@@ -1363,9 +1530,11 @@ var Purchases = ERP.Purchases = {
             var q = M.qty(l.quantity);
             it.receivedQty = M.qty(it.receivedQty + q);
             if (typeof it.extraUnitP !== 'number') it.extraUnitP = Inventory.rawExtraOf(it.productId);
+            if (typeof it.sellUnitP !== 'number') it.sellUnitP = Inventory.rawSellOf(it.productId);
             api.put('purchaseItems', it);
             Inventory.apply(api, {
-              productId: it.productId, warehouseId: it.warehouseId, qtyDelta: q, extraCostP: it.extraUnitP,
+              productId: it.productId, warehouseId: it.warehouseId, qtyDelta: q,
+              extraCostP: it.extraUnitP, sellP: it.sellUnitP,
               kind: 'PURCHASE_IN', ref: pu.purchaseNumber, refType: 'PURCHASE',
               note: 'Later delivery', date: todayISO(), unitCostP: it.unitPrice
             });

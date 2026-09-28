@@ -158,11 +158,18 @@ ERP.Purchases.save = function (draft) {
         var row = ERP.Inventory.row(it.productId, it.warehouseId);
         var previous = row.avgCostP;
         var useUnit = Cost.basis() === 'LANDED' ? a.landedUnit : a.goodsUnit;
-        /* Recomputed from every purchase of this product into this
-           warehouse rather than nudged from the figure the base save just
-           wrote — otherwise the landed cost would be applied twice. */
-        row.avgCostP = Cost.weightedAverage(it.productId, it.warehouseId) || useUnit;
         row.lastCostP = useUnit;
+        /* 2026-09-28: this used to recompute the average from EVERY purchase this product has ever had
+           (Cost.weightedAverage), overwriting the moving average Inventory.apply just blended from the raw
+           unitPrice for the bags on THIS purchase — ignoring Add stock, bags already sold since, and any
+           revalue from the product Prices screen. New purchases carry no charges/discount at all (removed
+           from the screen), so useUnit === it.unitPrice and nothing below runs; only an OLD purchase kept
+           from before that change can still differ, and here that difference is nudged onto the average for
+           exactly the bags this purchase just added, not recomputed from history. */
+        if (useUnit !== it.unitPrice && a.qty > 0 && row.qty > 0) {
+          var deltaTotal = (useUnit - it.unitPrice) * a.qty;
+          row.avgCostP = Math.max(0, Math.round(row.avgCostP + deltaTotal / row.qty));
+        }
         api.put('inventory', row);
         Cost.record(api, {
           kind: 'PURCHASE', productId: it.productId, supplierId: rec.supplierId,
