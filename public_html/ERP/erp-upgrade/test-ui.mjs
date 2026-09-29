@@ -135,9 +135,10 @@ const run = async () => {
   check('UI11 five distinct products',
         new Set(win.ERP.Builder.draft.items.map(i => i.productId)).size === 5);
 
-  /* ── type quantities ── */
+  /* ── type quantities and rates (§28, 2026-09-29: the sale rate is editable and opens blank for a
+     product never sold before — nothing pre-fills it any more, so it is typed here like any other box) ── */
   $$('[data-fcline="qty"]').forEach((el, i) => type(el, String(10 + i)));
-  // Removed rate typing: rate is read-only for Sales and prefilled from sellingPrice
+  $$('[data-fcline="rate"]').forEach((el, i) => type(el, String(3000 + i * 100)));
   await sleep(60);
   const expected = [0, 1, 2, 3, 4].reduce((a, i) => a + (10 + i) * (3000 + i * 100), 0);
   const firstQty = $$('[data-fcline="qty"]')[0];
