@@ -293,12 +293,8 @@ var Master = ERP.MasterEdit = {
       else next = Math.round(current * (1 + amount / 100));
       if (next < 0) next = 0;
       if (next === current) return;
-      /* the same floor the product Prices screen enforces — a bulk change cannot push a selling price
-         under what a bag actually costs (Inventory.averages), hard block, no override */
-      if (field === 'sell') {
-        var avg = ERP.Inventory.averages(id), floorP = avg.cost + avg.extra;
-        if (next > 0 && next < floorP) return;
-      }
+      /* §28, 2026-09-29: no floor here any more (client: "remove all restrictions" — selling below cost is
+         allowed everywhere, no override needed since there is nothing to override). */
       preview.push({ id: id, name: info.product.en || info.product.ur, from: current, to: next });
       var patch = {}; patch[field] = M.toR(next);
       jobs.push({ id: id, patch: patch });
@@ -331,12 +327,6 @@ var Master = ERP.MasterEdit = {
       var next = Math.max(0, mode === 'set' ? M.toP(amount)
                : mode === 'fixed' ? current + M.toP(amount)
                : Math.round(current * (1 + amount / 100)));
-      /* matches the hard floor bulkPrice() applies for 'sell' — the preview must not promise a change that
-         Save will then silently skip */
-      if (field === 'sell' && next > 0) {
-        var avg = ERP.Inventory.averages(id);
-        if (next < avg.cost + avg.extra) return null;
-      }
       return { id: id, name: info.product.en || info.product.ur, from: current, to: next };
     }).filter(Boolean);
   }

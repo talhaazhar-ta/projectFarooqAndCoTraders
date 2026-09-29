@@ -67,9 +67,10 @@ const run=async()=>{
   check('T1 two products: the discount (−1,000) and charges (+400) are shared by value — bags cost 4,962.5→4,963 and 2,977.5→2,978 (rounded)',
     Math.abs(i1.landedUnitCost-M.toP(4962.5))<=1 && Math.abs(i2.landedUnitCost-M.toP(2977.5))<=1, M.fmt(i1.landedUnitCost)+' / '+M.fmt(i2.landedUnitCost));
 
-  /* ── the purchase screen, simplified §26 (2026-09-28): no more Overall discount / Delivery / Loading /
-     Other charges boxes, no line Discount column — just the purchase price on the line, and extra cost /
-     selling price typed once per product below the table ── */
+  /* ── the purchase screen, simplified further (§28, 2026-09-29): no more Overall discount / Delivery /
+     Loading / Other charges boxes, no line Discount column, and — new — no more per-product Extra cost box
+     either: just the purchase price on the line. Extra cost is now chosen once, on the product's own Prices
+     screen. ── */
   ERP.Builder.start('purchase'); await sleep(250);
   const view=()=>$('#view').textContent.replace(/\s+/g,' ');
   check('S1 the old charge boxes are gone from the screen',
@@ -82,49 +83,41 @@ const run=async()=>{
   const Bd=ERP.Builder.draft; Bd.supplierId=mill; Bd.warehouseId=wh;
   win.ERP.BuilderUI.addLine(P[8].id); await sleep(150);
   Bd.items[0].quantity='5'; Bd.items[0].unitPrice='6000';
-  const extraBox=()=>$('[data-fcprod="extraPerBag"][data-pid="'+P[8].id+'"]');
-  check('S4 the per-product Extra cost box is on screen, with no Selling price box any more (§27, 2026-09-28)',
-    !!extraBox() && !$('[data-fcprod="sellPerBag"][data-pid="'+P[8].id+'"]'));
-  type(extraBox(),'40'); win.ERP.BuilderUI.refreshTotals();
-  const prodLine=()=>D.querySelector('.fcb-prodprice').textContent.replace(/\s+/g,' ');
-  check('S5 the per-product line works out purchase + extra = cost',
-    /6,000/.test(prodLine()) && /40/.test(prodLine()) && /6,040/.test(prodLine()), prodLine());
+  check('S4 there is no per-product pricing box of any kind on this screen any more (§28, 2026-09-29)',
+    !$('[data-fcprod]') && !D.querySelector('.fcb-prodprice'));
 
-  /* selling price is no longer typed on this screen (§27, 2026-09-28) — set one directly (as the Prices
-     screen would) BELOW what this purchase is about to cost, and check the purchase still saves, warning
-     rather than refusing */
-  await ERP.Prices.setSell(P[8].id, '5000', { reason: 'test baseline' });
   const saidMsgs=[]; win.say=m=>saidMsgs.push(m);
   const savedPu=await new Promise(res=>{
     const origSave=ERP.Purchases.save;
     ERP.Purchases.save=function(d){ ERP.Purchases.save=origSave; return origSave.call(ERP.Purchases,d).then(r=>{res(r);return r;}); };
     click($('[data-fcbact="save"]'));
   });
-  await sleep(80);   /* B.save's own .then (which shows the toast) is chained AFTER the wrapped save resolves */
-  check('S6 the purchase still saves even though 6,040 cost is now above the 5,000 selling price already set', !!savedPu);
-  check('S6b a warning nudges the owner to reprice instead of blocking the purchase',
-    saidMsgs.some(m=>/now costs more than its selling price/.test(m)), saidMsgs.join(' | '));
+  await sleep(80);
+  check('S5 the purchase saves with just the line\'s own purchase price', !!savedPu);
   const savedItem=ERP.Purchases.items(savedPu.id)[0];
-  check('S7 Save keeps the purchase price on the line (6,000) and the typed extra on the line too',
-    savedItem.unitPrice===M.toP(6000) && savedItem.extraUnitP===M.toP(40),
-    savedItem.unitPrice+' / '+savedItem.extraUnitP);
-  check('S8 the stock now averages 6,000 purchase + 40 extra = 6,040 cost — the selling price is untouched at 5,000',
-    ERP.Inventory.costOf(P[8].id,wh)===M.toP(6000) && ERP.Inventory.extraFor(P[8].id,wh)===M.toP(40) &&
-    ERP.Inventory.sellOf(P[8].id,wh)===M.toP(5000));
+  check('S6 the line keeps the purchase price (6,000)', savedItem.unitPrice===M.toP(6000), String(savedItem.unitPrice));
+  check('S7 the stock\'s own average is now 6,000 — a sale is costed at that average until a price is chosen on the Prices screen',
+    ERP.Inventory.saleBuyOf(P[8].id,wh)===M.toP(6000) && ERP.Inventory.averages(P[8].id).override===0);
 
-  /* ── the product's Prices screen: purchase price and extra cost are now READ-ONLY text (§27, 2026-09-28) —
-     the only input left is the selling price. The purchase itself is still listed with an Edit link. ── */
+  /* ── the product's Prices screen: the average purchase price is a read-only LABEL, with editable
+     "Purchase price" and "Extra cost per bag" boxes below it (§28, 2026-09-29) — no selling price on this
+     screen at all. The purchase itself is still listed with an Edit link. ── */
   ERP.openPriceEditor(A.id); await sleep(300);
   const roVals=()=>Array.from(D.querySelectorAll('#panel .pz-ro')).map(el=>el.textContent.trim());
-  check('P1 "Average purchase price" reflects the stock on hand (6,040 — A\'s earlier purchase with charges), shown read-only',
-    roVals()[0]==='PKR 6,040' && !$('#panel [data-f="buy"]') && !$('#panel [data-f="extra"]'), roVals().join(' / '));
-  type($('#panel [data-f="sell"]'),'6300');
+  check('P1 "Average purchase price (stock on hand)" reflects the stock on hand — 6,040, A\'s earlier purchase with charges — shown as a plain label',
+    roVals()[0]==='PKR 6,040', roVals().join(' / '));
+  check('P1b the Purchase price box defaults to that same average, and there is no Selling price box at all',
+    $('#panel [data-f="buy"]').value===String(6040) && !$('#panel [data-f="sell"]'), $('#panel [data-f="buy"]').value);
+  type($('#panel [data-f="buy"]'),'6300');
   const rows=()=>$('#pzCalcRows').textContent.replace(/\s+/g,' ');
-  check('P2 at a selling price of 6,300 it shows the profit a sale will really show: 260 a bag',
-    /Profit per bag\s*PKR 260/.test(rows()), rows());
-  check('P3 no old-style "Change" buttons or landed-charges banner on this simplified panel',
-    D.querySelectorAll('#pzCalcRows [data-pzedit="charges"]').length===0 && !$('#pzLanded'));
+  check('P2 typing a chosen purchase price of 6,300 updates the live "cost to us" line',
+    /Total cost per bag\s*PKR 6,300/.test(rows()), rows());
+  D.querySelector('#panel [data-f="reason"]').value='Owner chose a price';
+  click(D.querySelector('#panel [data-save]')); await sleep(300);
+  check('P2b Save stores it — a sale is now costed at 6,300, not the 6,040 average',
+    ERP.Inventory.saleBuyOf(A.id,wh)===M.toP(6300), String(ERP.Inventory.saleBuyOf(A.id,wh)));
   ERP.openPriceEditor(A.id); await sleep(300);   // fresh — nothing typed, so the Edit link below is free to navigate
+  check('P3 the "Use the average" button appears once a price is chosen', !!D.querySelector('[data-pzuseavg]'));
   const txRows=Array.from(D.querySelectorAll('#panel .pz-h'));
   check('P4 the purchase that priced this product is listed, with an Edit link',
     txRows.some(r=>/PUR-/.test(r.textContent)) && !!D.querySelector('#panel [data-pztxedit="purchase"]'));

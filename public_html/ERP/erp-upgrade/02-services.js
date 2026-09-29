@@ -195,49 +195,56 @@ var Inventory = ERP.Inventory = {
     var r = wid ? S.inventory[ikey(pid, wid)] : null;
     return r && typeof r.avgExtraP === 'number' ? r.avgExtraP : Inventory.rawExtraOf(pid);
   },
-  /* the extra a sale out of this warehouse carries (0 under the "purchase price only" profit basis) */
+  /* the extra a sale out of this warehouse carries (0 under the "purchase price only" profit basis).
+     §28, 2026-09-29: ONE extra cost per product, typed on the Prices screen (client: no more per-row
+     blending — a typed figure holds until it is changed). The row-level avgExtraP machinery (rowExtraP)
+     is left in place for movement history/reversal bookkeeping but is no longer read for costing a sale. */
   extraFor: function (pid, wid) {
     var basis = ERP.Settings && ERP.Settings.get ? ERP.Settings.get().profitCostBasis : null;
     if (basis === 'PURCHASE') return 0;
-    return Inventory.rowExtraP(pid, wid);
+    return Inventory.rawExtraOf(pid);
   },
-  /* 2026-09-28 (client: a purchase price is fixed on its document — a selling price is a decision, not a
-     delivery, so it is ONE figure per product, set only on the product Prices screen, never blended per
-     warehouse row and never touched by a purchase or Add stock). */
-  rawSellOf: function (pid) {
+  /* §28, 2026-09-29 (client: "no need of selling price — decided while selling"): the selling price is
+     typed fresh on every sale line, so there is no stored product selling price to read here any more.
+     Kept as a thin wrapper (returns 0) so any caller still expecting a function does not crash; the sale
+     line now pre-fills from Inventory.lastSoldP instead (05-ui-builder.js lastRate). */
+  rawSellOf: function (pid) { return 0; },
+  sellOf: function (pid, wid) { return 0; },
+  /* §28, 2026-09-29 (client: "write average of all purchase price of bags available in stock just as a
+     label, then the user decides the new purchase price"): the chosen figure a sale is costed at.
+     `p.costOverrideP` is set only on the Prices screen; while it is unset the live bag-weighted average
+     (Inventory.averages(pid).cost) is used, so a fresh product with no chosen price still costs correctly.
+     Once chosen, it holds even when new stock arrives at a different price — only editing it on the
+     Prices screen changes it again. */
+  saleBuyOf: function (pid, wid) {
     var p = global.prodOf && global.prodOf(pid);
-    if (!p) return 0;
-    var x = p.sellP !== undefined && p.sellP !== null ? Number(p.sellP) : (p.sell ? M.toP(p.sell) : 0);
-    return x > 0 ? x : 0;
+    if (p && p.costOverrideP > 0) return p.costOverrideP;
+    return Inventory.averages(pid).cost;
   },
-  /* the rate a new invoice line for this product opens with — the same figure everywhere, whatever the
-     warehouse (kept as a function, not a plain field read, so every caller goes through one place) */
-  sellOf: function (pid, wid) {
-    return Inventory.rawSellOf(pid);
-  },
-  /* the bag-weighted purchase price / extra cost of the stock actually on hand, across every warehouse — what
-     the product Prices screen shows (read-only) as the floor under a selling price. `sell` is the product's
-     own single selling price (Inventory.rawSellOf), not an average — there is only ever one. `bags` is 0 (and
-     cost/extra fall back to a carried/product figure) when nothing is in stock. */
+  /* the bag-weighted purchase price of the stock actually on hand, across every warehouse — what the
+     Prices screen shows as a read-only label. `extra` is the product's own single extra-cost figure
+     (Inventory.rawExtraOf) — there is only ever one, typed on the Prices screen, default 0. `override` is
+     the chosen purchase price if one has been set (0 if the price is still following the average). `bags`
+     is 0 (and `cost` falls back to a carried/last-known figure) when nothing is in stock. */
   averages: function (pid) {
-    var qty = 0, costV = 0, extraV = 0;
+    var qty = 0, costV = 0;
     Object.keys(S.inventory).forEach(function (k) {
       var r = S.inventory[k];
       if (r.productId !== pid || !(r.qty > 0)) return;
       var c = r.avgCostP || Inventory.carriedCost(pid, r.warehouseId) || 0;
-      var e = typeof r.avgExtraP === 'number' ? r.avgExtraP : Inventory.rawExtraOf(pid);
-      qty += r.qty; costV += c * r.qty; extraV += e * r.qty;
+      qty += r.qty; costV += c * r.qty;
     });
+    var p = global.prodOf && global.prodOf(pid);
+    var override = p && p.costOverrideP > 0 ? p.costOverrideP : 0;
     if (!qty) {
-      var p = global.prodOf && global.prodOf(pid);
       /* nothing on hand in ANY warehouse — a fully sold-out product used to show its cost as 0 here (the
          only fallback was the product's own p.buy, and nothing writes that any more since the Prices
          screen stopped revaluing cost/extra, §27 2026-09-28). Fall back to the last purchase/receipt this
          product ever had, so the read-only Prices screen still shows something real instead of "—". */
       var lastKnown = Inventory.lastKnownCost(pid);
-      return { cost: lastKnown || (p && p.buy ? M.toP(p.buy) : 0), extra: Inventory.rawExtraOf(pid), sell: Inventory.rawSellOf(pid), bags: 0 };
+      return { cost: lastKnown || (p && p.buy ? M.toP(p.buy) : 0), extra: Inventory.rawExtraOf(pid), override: override, bags: 0 };
     }
-    return { cost: Math.round(costV / qty), extra: Math.round(extraV / qty), sell: Inventory.rawSellOf(pid), bags: qty };
+    return { cost: Math.round(costV / qty), extra: Inventory.rawExtraOf(pid), override: override, bags: qty };
   },
   /* the purchase price of the most recent purchase/receipt this product ever had, in ANY warehouse,
      regardless of whether any of those bags are still in stock — the fallback `averages()` uses once a
@@ -253,10 +260,27 @@ var Inventory = ERP.Inventory = {
     });
     return best ? best.cost : 0;
   },
-  /* what one bag of a sale is costed at: the stock cost plus the extra cost per bag. An unknown stock
-     cost stays unknown (0) — the extra alone is not a cost price and would show a made-up profit. */
+  /* The rate this product last sold at on a live invoice — §28, 2026-09-29: offered as the starting figure
+     for a NEW sale line (the selling price is typed fresh on every sale now, there is no stored product
+     figure). Moved here from 21-settings.js so both the Prices screen and the Builder can share it. */
+  lastSoldP: function (pid) {
+    var best = null;
+    (S.invoiceItems || []).forEach(function (it) {
+      if (it.productId !== pid || !(it.unitPrice > 0)) return;
+      var inv = ERP.Invoices && ERP.Invoices.byId ? ERP.Invoices.byId(it.invoiceId) : null;
+      if (!inv || inv.status === 'CANCELLED' || inv.status === 'DRAFT') return;
+      var stamp = (inv.invoiceDate || '') + '|' + (inv.createdAt || '');
+      if (!best || stamp > best.stamp) best = { stamp: stamp, p: it.unitPrice };
+    });
+    return best ? best.p : 0;
+  },
+  /* what one bag of a sale is costed at: the chosen purchase price (Inventory.saleBuyOf — the Prices
+     screen's figure, or the live average when none was chosen) plus the extra cost per bag. An unknown
+     cost stays unknown (0) — the extra alone is not a cost price and would show a made-up profit.
+     §28, 2026-09-29: this drives PROFIT ONLY — Stock value (37-stock-value.js) still reads the real
+     document costs (Inventory.costOf/carriedCost), never the chosen override. */
   saleCostOf: function (pid, wid) {
-    var base = Inventory.costOf(pid, wid);
+    var base = Inventory.saleBuyOf(pid, wid);
     return base ? base + Inventory.extraFor(pid, wid) : 0;
   },
   /* the weighted cost of stock that came in without ever touching avgCostP — opening stock, "Add
@@ -590,8 +614,9 @@ var Invoices = ERP.Invoices = {
       tax: it.tax, lineTotal: it.lineTotal,
       /* costSnapshot stays the sum of the two, for every existing report that already reads it; the split is
          new (§26, 2026-09-28) so Profit & margin can show the written sum the client asked for — Purchase
-         price + Extra cost = Total — instead of only the total. */
-      costBuySnapshot: Inventory.costOf(it.productId, wid),
+         price + Extra cost = Total — instead of only the total. §28, 2026-09-29: costBuySnapshot is now the
+         CHOSEN purchase price (Inventory.saleBuyOf — the Prices screen's figure or the live average). */
+      costBuySnapshot: Inventory.saleBuyOf(it.productId, wid),
       costExtraSnapshot: Inventory.extraFor(it.productId, wid),
       costSnapshot: Inventory.saleCostOf(it.productId, wid),
       warehouseId: wid, batchNo: it.batchNo || '', notes: it.notes || '',

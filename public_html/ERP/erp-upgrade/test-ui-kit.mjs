@@ -481,18 +481,20 @@ async function main() {
     click(w, btn(w, 'cancel')); await sleep(60);
     check('G10 cancelling it wipes nothing and leaves window.confirm as it was', w.PRODUCTS.length === nProducts && /native code/.test(Function.prototype.toString.call(w.confirm)));
 
-    /* price warning: a hard block, synchronous, no confirm-and-keep-anyway any more (§27, 2026-09-28 — the
-       client's own rule: a selling price cannot be set under what a bag costs, not even by pressing Save
-       twice). Purchase price / extra cost are no longer typed on this panel — give the product a baseline
-       cost through Prices.set first (a fresh product otherwise has none, and everything would pass). */
-    await ERP.Prices.set(prod.id, { buy: '2200', extra: '0' }, { reason: 'test baseline' }).catch(() => {});
+    /* the price panel: synchronous refusals stay a STRING (the panel-close trap), but there is no more
+       below-cost block of any kind (§28, 2026-09-29 — client: "remove all restrictions"). A panel.save()
+       that returns an object CLOSES the panel and says "Saving…" — refuse every bad input here, never later
+       in a promise. */
     ERP.openPriceEditor(prod.id);
-    const first = w.PANELS.prices.save({ sell: '2100', reason: 'test' });
-    check('G11 saving a selling-below-cost price refuses outright, in the panel', typeof first === 'string' && /below what a bag costs/i.test(first), String(first));
-    const second = w.PANELS.prices.save({ sell: '2100', reason: 'test' });
-    check('G12 pressing Save again with the same figure still refuses it — there is no override', typeof second === 'string' && /below what a bag costs/i.test(second), String(second));
-    const third = w.PANELS.prices.save({ sell: '2300', reason: 'test' });
-    check('G13 a corrected figure, above cost, saves normally', third && typeof third === 'object' && !!third.msg, JSON.stringify(third));
+    const first = w.PANELS.prices.save({ buy: 'abc', reason: 'test' });
+    check('G11 a non-number purchase price refuses synchronously, in the panel', typeof first === 'string' && /number/i.test(first), String(first));
+    const second = w.PANELS.prices.save({ buy: '100', extra: '0', reason: 'test' });
+    check('G12 a purchase price far below anything ever paid saves normally — no restriction of any kind',
+      second && typeof second === 'object' && !!second.msg, JSON.stringify(second));
+    await sleep(200);
+    ERP.openPriceEditor(prod.id);
+    const third = w.PANELS.prices.save({});
+    check('G13 pressing Save again with nothing changed says so, inside the panel', typeof third === 'string' && /Nothing to save/i.test(third), String(third));
     await sleep(200);
 
     /* a real dropdown from the real app */

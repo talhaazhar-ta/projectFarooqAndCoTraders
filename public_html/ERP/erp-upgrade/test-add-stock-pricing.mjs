@@ -1,16 +1,15 @@
 /* Add stock (Inventory → Add stock, Builder mode "receive") and Purchases → Receive stock were simplified
-   2026-09-28 (§26), then §27 (same day, client: "how can changing the Prices screen re-price every
-   already-issued receipt?") fixed the purchase price and extra cost to the DOCUMENT they were typed on and
-   moved the selling price out entirely — it is now set only on the product's Prices screen. This file covers:
-     - typing in the per-product Extra cost box reaches ERP.Builder.draft.perProduct (no Selling price box
-       exists here any more);
-     - Save keeps the purchase price on the line UNCHANGED (no folding) and blends extra into the row's
-       own average — the selling price is never touched by a purchase or receipt;
-     - a receipt that pushes the average cost above an already-set selling price WARNS after saving, but
-       still saves (never blocked — the client's decision: warn, don't stop the business);
-     - the sale screen's rate cell is read-only with an Edit button that opens the product Prices panel
-       (data-fcpriceedit) — a side panel, so an unsaved sale is never at risk just from opening it, and the
-       panel itself shows purchase price / extra cost as read-only text, selling price as the only input. */
+   further 2026-09-29 (§28, client): "no need to ask for extra costs for any product added — just purchase
+   price… remove extra prices of the products in charges & prices section… same in inventory addStock". This
+   file covers:
+     - there is no per-product pricing box of any kind on either screen any more — just the purchase price
+       typed on the line itself;
+     - Save keeps the purchase price on the line UNCHANGED and blends it into the stock's own average — the
+       product's extra cost / chosen purchase price (set on the Prices screen) are never touched by a receipt;
+     - the sale screen's rate cell is EDITABLE (no restriction — client: "remove all restrictions"), with an
+       Edit button that opens the product Prices panel (data-fcpriceedit) as a side panel, so an unsaved sale
+       is never at risk just from opening it; the panel shows the average purchase price as a read-only
+       label, with editable Purchase price / Extra cost boxes and no selling price at all. */
 import fs from 'fs';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import FDBFactory from 'fake-indexeddb/lib/FDBFactory';
@@ -57,69 +56,51 @@ const run = async () => {
   const products = win.PRODUCTS.filter(p => p.active !== false);
   const pA = products[30], pB = products[31];
 
-  /* known baselines — the seed catalogue may already carry a saved price */
-  await ERP.Prices.set(pA.id, { buy: '1000', min: '' }, { reason: 'test baseline' }).catch(() => {});
-  await ERP.Prices.set(pB.id, { buy: '1000', min: '' }, { reason: 'test baseline' }).catch(() => {});
-
-  /* ═══ A. typing reaches B.draft.perProduct (per product, not per box on the draft itself); no Selling
-     price box exists here any more (§27, 2026-09-28) ═══ */
+  /* ═══ A. no per-product pricing box of any kind on Add stock any more (§28, 2026-09-29) ═══ */
   ERP.Builder.start('receive'); await sleep(80);
   change($('[data-fcb="warehouseId"]'), wh); await sleep(30);
   ERP.BuilderUI.addLine(pA.id); await sleep(60);
   type($('[data-fcline="qty"]'), '20');
   type($('[data-fcline="rate"]'), '3000');
   change($('[data-fcb="reason"]'), 'test receipt');
-  type($('[data-fcprod="extraPerBag"][data-pid="' + pA.id + '"]'), '100');
   await sleep(60);
-  check('AS1 "Extra cost / bag" reaches perProduct', ERP.Builder.draft.perProduct[pA.id].extraPerBag === '100');
-  check('AS2 there is no "Selling price / bag" box on this screen any more',
-    !$('[data-fcprod="sellPerBag"][data-pid="' + pA.id + '"]'));
+  check('AS1 there is no per-product Extra cost box on Add stock any more',
+    !$('[data-fcprod]') && !D.querySelector('.fcb-prodprice'));
+  const cardHeadings=Array.from(D.querySelectorAll('.fcb-card .card-h h3')).map(h=>h.textContent);
+  check('AS2 there is no "Charges & prices" card any more — just Notes',
+    cardHeadings.indexOf('Notes')>-1 && cardHeadings.indexOf('Charges & prices')===-1, cardHeadings.join(' | '));
 
-  /* ═══ B. saving keeps the purchase price on the LINE, and blends extra into the stock's own average —
-     neither is folded into unitCostP; the selling price is never touched by a receipt ═══ */
-  const sellBeforeA = ERP.Inventory.sellOf(pA.id, wh);
+  /* ═══ B. saving keeps the purchase price on the LINE, and it blends into the stock's own average — the
+     product's chosen purchase price / extra cost (set on the Prices screen) are never touched by a receipt ═══ */
+  const chosenBeforeA = ERP.Inventory.averages(pA.id).override;
+  const extraBeforeA = ERP.Inventory.extraFor(pA.id, wh);
   const before = ERP.StockDocs.all().length;
   click($('[data-fcbact="save"]')); await sleep(250);
   check('AS3 the receipt saved (one more stock document)', ERP.StockDocs.all().length === before + 1);
   const doc = ERP.StockDocs.all()[0];
   const line = doc ? ERP.StockDocs.items(doc.id)[0] : null;
-  check('AS4 the line keeps the typed purchase price, 3000 — extra is not folded in',
-    !!line && line.unitCostP === M.toP(3000), line && String(line.unitCostP));
-  check('AS4b the line carries its own extraUnitP (100), and has no sellUnitP at all',
-    !!line && line.extraUnitP === M.toP(100) && line.sellUnitP === undefined,
-    line && (line.extraUnitP + ' / ' + line.sellUnitP));
+  check('AS4 the line keeps the typed purchase price, 3000', !!line && line.unitCostP === M.toP(3000), line && String(line.unitCostP));
   check('AS5 the stock\'s recorded cost is the purchase price, 3000', ERP.Inventory.costOf(pA.id, wh) === M.toP(3000));
-  check('AS6 the stock\'s average extra cost is 100', ERP.Inventory.extraFor(pA.id, wh) === M.toP(100),
-    String(ERP.Inventory.extraFor(pA.id, wh)));
-  check('AS6a the selling price is exactly what it was before this receipt — never blended by Add stock',
-    ERP.Inventory.sellOf(pA.id, wh) === sellBeforeA, sellBeforeA + ' → ' + ERP.Inventory.sellOf(pA.id, wh));
-  check('AS6b what a sale is costed at follows: 3000 + 100 = 3100', ERP.Inventory.saleCostOf(pA.id, wh) === M.toP(3100));
+  check('AS6 the product\'s chosen purchase price (if any) and extra cost are exactly what they were before this receipt',
+    ERP.Inventory.averages(pA.id).override === chosenBeforeA && ERP.Inventory.extraFor(pA.id, wh) === extraBeforeA);
 
-  /* ═══ C. a receipt that pushes cost above an already-set selling price WARNS after saving, but still
-     saves — never blocked (§27, 2026-09-28 decision: warn, don't stop the business) ═══ */
-  await ERP.Prices.setSell(pB.id, '1900', { reason: 'test baseline — below the 2050 this receipt will cost' });
-  ERP.Builder.start('receive'); await sleep(80);
+  /* ═══ C. same for Purchases → Receive stock: no per-product box, purchase price stays on the line ═══ */
+  ERP.Builder.start('purchase'); await sleep(80);
+  change($('[data-fcb="supplierId"]'), sup); await sleep(30);
   change($('[data-fcb="warehouseId"]'), wh); await sleep(30);
   ERP.BuilderUI.addLine(pB.id); await sleep(60);
   type($('[data-fcline="qty"]'), '10');
   type($('[data-fcline="rate"]'), '2000');
-  change($('[data-fcb="reason"]'), 'test receipt 2');
-  type($('[data-fcprod="extraPerBag"][data-pid="' + pB.id + '"]'), '50');   // 2000 + 50 = 2050, above the 1900 already set
-  await sleep(60);
-  const before2 = ERP.StockDocs.all().length;
-  const saidMsgs = []; win.say = m => saidMsgs.push(m);
+  check('AS7 the purchase screen has no per-product pricing box either',
+    !$('[data-fcprod]') && !D.querySelector('.fcb-prodprice'));
+  const before2 = ERP.Purchases.all().length;
   click($('[data-fcbact="save"]')); await sleep(250);
-  check('AS7 the receipt still saves even though its cost is now above the selling price already set',
-    ERP.StockDocs.all().length === before2 + 1);
-  check('AS7b a warning nudges the owner to reprice, instead of refusing the receipt',
-    saidMsgs.some(m => /now costs more than its selling price/.test(m)), saidMsgs.join(' | '));
-  check('AS8 the selling price itself is untouched at 1,900', ERP.Inventory.sellOf(pB.id, wh) === M.toP(1900),
-    String(ERP.Inventory.sellOf(pB.id, wh)));
+  check('AS8 the purchase saves', ERP.Purchases.all().length === before2 + 1);
+  check('AS9 what a sale is costed at now follows the live average (2,000) — nothing chosen on the Prices screen yet',
+    ERP.Inventory.saleBuyOf(pB.id, wh) === M.toP(2000), String(ERP.Inventory.saleBuyOf(pB.id, wh)));
 
-  /* ═══ D. the sale screen's rate cell: read-only, with an Edit button that opens the product Prices panel
-     (a side panel — it must NOT touch the sale draft just by opening it) ═══ */
-  const pu = await ERP.Purchases.save({ supplierId: sup, warehouseId: wh, purchaseDate: '2026-09-20',
-    items: [{ productId: pB.id, quantity: 50, unitPrice: 2500 }] });
+  /* ═══ D. the sale screen's rate cell: EDITABLE (no restriction), with an Edit button that opens the
+     product Prices panel (a side panel — it must NOT touch the sale draft just by opening it) ═══ */
   const cust = win.CUSTOMERS[0];
   ERP.Builder.start('sale'); await sleep(80);
   change($('[data-fcb="customerId"]'), cust.id); await sleep(30);
@@ -127,21 +108,30 @@ const run = async () => {
   ERP.BuilderUI.addLine(pB.id); await sleep(60);
   const rateInput = $('[data-fcline="rate"]');
   const editBtn = $('[data-fcpriceedit]');
-  check('D1 the sale rate is read-only', !!rateInput && rateInput.readOnly === true);
-  check('D2 the Edit button is on the sale line', !!editBtn && editBtn.dataset.fcpriceedit === pB.id);
+  check('D1 the sale rate is EDITABLE — no restriction (§28, 2026-09-29)', !!rateInput && rateInput.readOnly !== true);
+  check('D2 the Edit button is still on the sale line, to open the product\'s Prices screen',
+    !!editBtn && editBtn.dataset.fcpriceedit === pB.id);
   check('D3 the draft is dirty (a fresh unsaved line was just added)', ERP.Builder.dirty === true);
+  check('D3b the cost label underneath shows the purchase price + extra cost, purely informational',
+    /cost/i.test($('.fcb-costline')?.textContent || ''));
+
+  type(rateInput, '50');   // far below the 2,000 cost — a deliberate loss, must not be refused
+  await sleep(60);
+  check('D3c the rate can be typed freely, including far below cost', rateInput.value === '50');
 
   click(editBtn); await sleep(120);
   check('D4 opening the Prices panel does NOT discard the unsaved sale', ERP.Builder.mode === 'sale' && ERP.Builder.dirty === true);
   check('D5 the Prices panel is actually open, for the right product',
     !!$('#panel.on') && D.body.textContent.indexOf(pB.en || pB.ur) > -1);
-  check('D6 the panel shows purchase price / extra cost as read-only text, selling price as the only input (§27)',
-    D.querySelectorAll('#panel .pz-ro').length === 2 &&
-    !!$('#panel [data-f="sell"]') && !$('#panel [data-f="buy"]') && !$('#panel [data-f="extra"]') &&
+  check('D6 the panel shows the average purchase price as a read-only label, editable Purchase price / Extra ' +
+    'cost boxes, and no selling price of any kind',
+    D.querySelectorAll('#panel .pz-ro').length === 1 &&
+    !!$('#panel [data-f="buy"]') && !!$('#panel [data-f="extra"]') && !$('#panel [data-f="sell"]') &&
     !$('#panel [data-f="min"]') && !$('#panel [data-f="wholesale"]') && !$('#panel [data-f="reorder"]'));
   const closeBtn = $('#panel [data-close]');
   click(closeBtn); await sleep(60);
-  check('D7 closing the panel leaves the sale exactly as it was', ERP.Builder.mode === 'sale' && ERP.Builder.dirty === true);
+  check('D7 closing the panel leaves the sale exactly as it was, including the loss-making rate just typed',
+    ERP.Builder.mode === 'sale' && ERP.Builder.dirty === true && $('[data-fcline="rate"]').value === '50');
 
   check('Z nothing threw during the session', errors.length === 0, errors.slice(0, 3).join(' | '));
   console.log('\n' + out.join('\n') + '\n\n' + pass + ' passed, ' + fail + ' failed\n');

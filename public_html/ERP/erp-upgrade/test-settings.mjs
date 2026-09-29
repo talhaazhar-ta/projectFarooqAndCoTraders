@@ -80,9 +80,11 @@ const run=async()=>{
     items:[{productId:rice.id,quantity:100,unitPrice:2200}]});
   ERP.Builder.start('sale'); await sleep(120);
   ERP.BuilderUI.addLine(rice.id); await sleep(80);
-  check('S13 a new invoice line starts at the current selling price',
-    Number(ERP.Builder.draft.items[0].unitPrice)===2600,
-    String(ERP.Builder.draft.items[0].unitPrice));
+  /* §28, 2026-09-29: there is no more product-level "selling price" field — a new invoice line starts
+     blank (or at the LAST rate this product actually sold at, Inventory.lastSoldP) and is typed fresh at
+     the sale every time, never read from Prices.set's 'sell' field any more. */
+  check('S13 a new invoice line for a product never sold before starts blank — it is typed fresh at the sale',
+    (ERP.Builder.draft.items[0].unitPrice||'')==='', String(ERP.Builder.draft.items[0].unitPrice));
   ERP.Builder.draft=null;
   check('S14 the stock alert level comes from the product, then the setting',
     ERP.reorderLevelOf(rice.id)===40 && ERP.reorderLevelOf(P[7].id)===ERP.Settings.get().defaultReorderLevel);

@@ -63,6 +63,39 @@ function figures(buyP, extraP, sellP, chargeP) {
   };
 }
 
+/* shared write path for Prices.setCost — a request goes through Prices.request instead when approval is
+   required; otherwise applies immediately and records history + audit, same shape as Prices.set's own tx. */
+function applySetCost(productId, p, changes, opts) {
+  if (!opts.approving && ERP.Prices.approvalRequired()) return ERP.Prices.request(productId, changes, opts.reason);
+  return FDB.tx(['products', 'priceHistory', 'auditLog'], function (api) {
+    changes.forEach(function (c) {
+      if (c.field === 'costOverride') p.costOverrideP = c.to > 0 ? c.to : null;
+      else if (c.field === 'extra') { p.extraP = c.to; p.extra = M.toR(c.to); }
+      var h = {
+        id: FDB.uid('ph'), productId: productId, productName: p.en || p.ur || productId,
+        field: c.field, fieldLabel: c.label, oldValue: c.from, newValue: c.to, money: c.money,
+        reason: opts.reason || '', changedBy: opts.approvedFor || who(),
+        changedByRole: opts.approvedForRole || role(),
+        approvedBy: opts.approving ? who() : null, approvedByRole: opts.approving ? role() : null,
+        changedAt: nowISO(), effectiveDate: opts.date || nowISO().slice(0, 10)
+      };
+      api.put('priceHistory', h);
+      (S.priceHistory = S.priceHistory || []).unshift(h);
+    });
+    api.put('products', p);
+    ERP.Audit.write(api, {
+      action: 'Product cost updated', entity: 'Product', entityId: productId, ref: p.en || p.ur,
+      oldValues: changes.reduce(function (a, c) { a[c.field] = c.money ? M.toR(c.from) : c.from; return a; }, {}),
+      newValues: changes.reduce(function (a, c) { a[c.field] = c.money ? M.toR(c.to) : c.to; return a; }, {}),
+      reason: opts.reason || ''
+    });
+  }).then(function () {
+    if (ERP.markMasterDirty) ERP.markMasterDirty();
+    try { global.dbSave(); } catch (e) {}
+    return { changes: changes, applied: true };
+  });
+}
+
 var Prices = ERP.Prices = {
   fields: FIELDS,
   history: function (productId) {
@@ -235,56 +268,56 @@ var Prices = ERP.Prices = {
     });
   },
 
-  /* §27, 2026-09-28 (client: a purchase price and extra cost are FIXED on the document they were written on —
-     correcting one means editing that purchase or stock receipt, not this screen. Only the selling price is
-     set here, and it can never be set below what a bag costs — the bag-weighted average purchase price plus
-     extra cost of the stock actually on hand, Inventory.averages). Replaces the old `revalue`, which used to
-     let this screen silently re-price every already-issued document's bags. Approval-gated like Prices.set. */
-  setSell: function (productId, value, opts) {
+  /* §28, 2026-09-29 (client: "write average of all purchase price of bags available in stock just as a
+     label, then the user decides the new purchase price… when user changes it the new value will always be
+     there even when new products are added… extra cost of the product will be decided [here]… no need of
+     selling price here, it will be decided while selling"). Replaces `setSell` — this screen no longer
+     touches a selling price at all. Two things are set here:
+       - `costOverrideP` — the CHOSEN purchase price (Inventory.saleBuyOf reads it ahead of the live average;
+         Stock value never does, §28 decision: the chosen figure drives sale profit only). Typing the SAME
+         figure the label already shows changes nothing; typing anything else pins that figure until it is
+         changed again here or cleared back to "follow the average" (opts.clearOverride).
+       - `extraP`/`extra` — one extra-cost figure per product (no more per-warehouse-row blending, §28).
+     No floor, no restriction of any kind (client: "remove all restrictions") — approval-gated like Prices.set
+     when price-approval is switched on. */
+  setCost: function (productId, values, opts) {
     opts = opts || {};
+    values = values || {};
     var p = global.prodOf ? global.prodOf(productId) : null;
     if (!p) return Promise.reject({ validation: ['Product not found.'] });
     var cur = ERP.Inventory.averages(productId);
-    var sell = value !== undefined && value !== '' ? num(value) : M.toR(cur.sell);
-    if (sell === null) return Promise.reject({ validation: ['Enter a number only.'] });
-    if (sell < 0) return Promise.reject({ validation: ['A price cannot be negative.'] });
-    var sellP = M.toP(sell);
-    var floorP = cur.cost + cur.extra;
-    /* hard block, no override — the client's own rule: a selling price cannot be set under what a bag costs */
-    if (sellP > 0 && sellP < floorP) {
-      return Promise.reject({ validation: ['Selling below what a bag costs (purchase ' + M.fmt(cur.cost) +
-        (cur.extra ? ' + extra ' + M.fmt(cur.extra) : '') + ' = ' + M.fmt(floorP) + ') — every bag would lose ' +
-        M.fmt(floorP - sellP) + '.'] });
+    var fromOverride = p.costOverrideP > 0 ? p.costOverrideP : 0;
+    var fromExtra = p.extraP > 0 ? p.extraP : 0;
+
+    if (opts.clearOverride) {
+      /* un-pinning back to "follow the live average" sets nothing new — it never needs approval, even when
+         price-approval is switched on for everyone else (opts.approving:true skips the request queue) */
+      if (!fromOverride) return Promise.resolve({ changes: [], unchanged: true });
+      return applySetCost(productId, p, [{ field: 'costOverride', label: 'Purchase price (chosen)',
+        money: true, from: fromOverride, to: 0 }], Object.assign({}, opts, { approving: true }));
     }
-    var from = p.sellP || 0;
-    if (sellP === from) return Promise.resolve({ changes: [], unchanged: true });
-    var changes = [{ field: 'sell', label: 'Selling price', money: true, from: from, to: sellP }];
 
-    if (!opts.approving && Prices.approvalRequired()) return Prices.request(productId, changes, opts.reason);
+    var displayedBuy = fromOverride || cur.cost;
+    var buy = values.buy !== undefined && values.buy !== '' ? num(values.buy) : M.toR(displayedBuy);
+    if (buy === null) return Promise.reject({ validation: ['Enter a number only for the purchase price.'] });
+    if (buy < 0) return Promise.reject({ validation: ['A price cannot be negative.'] });
+    var extra = values.extra !== undefined && values.extra !== '' ? num(values.extra) : M.toR(fromExtra);
+    if (extra === null) return Promise.reject({ validation: ['Enter a number only for the extra cost.'] });
+    if (extra < 0) return Promise.reject({ validation: ['An extra cost cannot be negative.'] });
 
-    var stores = ['products', 'priceHistory', 'auditLog'];
-    return FDB.tx(stores, function (api) {
-      p.sellP = sellP; p.sell = M.toR(sellP);
-      api.put('products', p);
-      var h = {
-        id: FDB.uid('ph'), productId: productId, productName: p.en || p.ur || productId,
-        field: 'sell', fieldLabel: 'Selling price', oldValue: from, newValue: sellP, money: true,
-        reason: opts.reason || '', changedBy: opts.approvedFor || who(),
-        changedByRole: opts.approvedForRole || role(),
-        approvedBy: opts.approving ? who() : null, approvedByRole: opts.approving ? role() : null,
-        changedAt: nowISO(), effectiveDate: opts.date || nowISO().slice(0, 10)
-      };
-      api.put('priceHistory', h);
-      (S.priceHistory = S.priceHistory || []).unshift(h);
-      ERP.Audit.write(api, {
-        action: 'Selling price updated', entity: 'Product', entityId: productId, ref: p.en || p.ur,
-        oldValues: { sell: M.toR(from) }, newValues: { sell: M.toR(sellP) }, reason: opts.reason || ''
-      });
-    }).then(function () {
-      if (ERP.markMasterDirty) ERP.markMasterDirty();
-      try { global.dbSave(); } catch (e) {}
-      return { changes: changes, applied: true };
-    });
+    var buyP = M.toP(buy), extraP = M.toP(extra);
+    var changes = [];
+    /* whatever is typed becomes the pinned figure the moment it differs from what the box shows — the same
+       number typed back (nothing actually changed) leaves the average following free, so opening and
+       re-saving this screen without touching the box never locks a price by accident */
+    if (buyP !== displayedBuy) {
+      changes.push({ field: 'costOverride', label: 'Purchase price (chosen)', money: true, from: fromOverride, to: buyP });
+    }
+    if (extraP !== fromExtra) {
+      changes.push({ field: 'extra', label: 'Extra cost per bag', money: true, from: fromExtra, to: extraP });
+    }
+    if (!changes.length) return Promise.resolve({ changes: [], unchanged: true });
+    return applySetCost(productId, p, changes, opts);
   },
 
   /* the approval queue */
@@ -312,29 +345,35 @@ var Prices = ERP.Prices = {
     var rec = (S.priceApprovals || []).filter(function (a) { return a.id === id; })[0];
     if (!rec || rec.status !== 'PENDING') return Promise.resolve(null);
     if (!Prices.canApprove()) return Promise.reject({ validation: ['Only the owner or a manager can approve a price.'] });
-    var values = {};
-    rec.changes.forEach(function (c) { values[c.field] = c.money ? M.toR(c.to) : c.to; });
-    /* the floor a selling price cannot go under (§27, 2026-09-28) is checked again HERE, not only when the
-       request was raised — a new, dearer purchase may have landed in the days the request sat waiting */
-    if (values.sell !== undefined) {
-      var curA = ERP.Inventory.averages(rec.productId), sellP = M.toP(values.sell), floorP = curA.cost + curA.extra;
-      if (sellP > 0 && sellP < floorP) {
-        return Promise.reject({ validation: ['The stock now costs more than the requested price (purchase ' +
-          M.fmt(curA.cost) + (curA.extra ? ' + extra ' + M.fmt(curA.extra) : '') + ' = ' + M.fmt(floorP) +
-          ') — ask for a fresh request at a higher price.'] });
-      }
-    }
-    return Prices.set(rec.productId, values, {
-      reason: rec.reason || 'Approved price change', approving: true,
-      approvedFor: rec.requestedBy, approvedForRole: rec.requestedByRole
-    }).then(function (r) {
+    var finish = function (r) {
       return FDB.tx(['priceApprovals', 'auditLog'], function (api) {
         rec.status = 'APPROVED'; rec.decidedBy = who(); rec.decidedAt = nowISO(); rec.decision = 'APPROVED';
         api.put('priceApprovals', rec);
         ERP.Audit.write(api, { action: 'Price change approved', entity: 'Product',
           entityId: rec.productId, ref: rec.productName, reason: rec.reason });
       }).then(function () { return r; });
-    });
+    };
+    /* §28, 2026-09-29: a request that touched the chosen purchase price (Prices.setCost) is re-applied
+       through setCost, not the generic engine — no floor to re-check any more (client: "remove all
+       restrictions"), it simply lands against whatever the live average is by the time it is approved. */
+    var isCost = rec.changes.some(function (c) { return c.field === 'costOverride' || c.field === 'extra'; });
+    if (isCost) {
+      var patch = {};
+      rec.changes.forEach(function (c) {
+        if (c.field === 'costOverride') patch.buy = M.toR(c.to);
+        else if (c.field === 'extra') patch.extra = M.toR(c.to);
+      });
+      return Prices.setCost(rec.productId, patch, {
+        reason: rec.reason || 'Approved price change', approving: true,
+        approvedFor: rec.requestedBy, approvedForRole: rec.requestedByRole
+      }).then(finish);
+    }
+    var values = {};
+    rec.changes.forEach(function (c) { values[c.field] = c.money ? M.toR(c.to) : c.to; });
+    return Prices.set(rec.productId, values, {
+      reason: rec.reason || 'Approved price change', approving: true,
+      approvedFor: rec.requestedBy, approvedForRole: rec.requestedByRole
+    }).then(finish);
   },
   reject: function (id, why) {
     var rec = (S.priceApprovals || []).filter(function (a) { return a.id === id; })[0];
@@ -468,45 +507,16 @@ function costLine(buyP, extraP, sellP, chargeP) {
              '%</b>, markup <b>' + f.markup + '%</b>' : '');
 }
 
-/* The sum written out the way the owner does it on paper: purchase + extra = cost, then the sale and what is left.
-   `qty` (bags) only scales the totals underneath. Numbers only, like costLine. Returns the per-bag lines and the
-   totals line. Purchase price and extra cost are read-only here (2026-09-28) — a "Change" button says where each
-   one is really edited: the purchase or stock receipt it was typed on. */
-function calcHtml(buyP, extraP, sellP, qty, chargeP) {
-  if (buyP < 0 || extraP < 0 || sellP < 0) return { rows: '', total: '' };
-  var f = figures(buyP, extraP, sellP, chargeP);
-  var row = function (label, p, strong, act) {
-    return '<div class="pz-cr' + (strong ? ' pz-cs' : '') + '"><span>' + label + '</span><b>' + M.fmt(p) + '</b>' +
-      (act ? '<button type="button" class="pz-chg" data-pzedit="' + act.k + '"' + (act.id ? ' data-id="' + esc(act.id) + '"' : '') +
-        ' title="' + esc(act.tip) + '">Change</button>' : '') + '</div>';
+/* §28, 2026-09-29: the sum written out the way the owner does it on paper — purchase + extra = cost. No
+   selling price / profit here any more (the selling price is decided at the sale, not on this screen) and
+   no "try N bags" box — the client asked to see just the per-bag figures. Numbers only, like costLine. */
+function calcHtml(buyP, extraP) {
+  if (buyP < 0 || extraP < 0) return { rows: '' };
+  var cost = (buyP || 0) + (extraP || 0);
+  var row = function (label, p, strong) {
+    return '<div class="pz-cr' + (strong ? ' pz-cs' : '') + '"><span>' + label + '</span><b>' + M.fmt(p) + '</b></div>';
   };
-  var lb = PRICE_LANDED;
-  var n = qty > 0 && isFinite(qty) ? qty : 1;
-  return {
-    rows: row('Purchase price', buyP) +
-      (chargeP ? row('+ Charges on the purchase', chargeP, false,
-        lb && lb.purchaseId ? { k: 'charges', id: lb.purchaseId, tip: 'These charges were typed on purchase ' + (lb.number || '') + ' — open it to change them' } : null) : '') +
-      row('+ Extra cost', extraP) +
-      row('= Total cost per bag', f.cost, true) +
-      row('Selling price', sellP) + row('Profit per bag', f.profit, true),
-    total: '<b>' + n + ' bag' + (n === 1 ? '' : 's') + '</b>: sale ' + n + ' × ' + M.fmt(sellP) + ' = <b>' + M.fmt(Math.round(sellP * n)) +
-      '</b> · cost ' + n + ' × ' + M.fmt(f.cost) + ' = ' + M.fmt(Math.round(f.cost * n)) +
-      ' · <b>actual profit ' + M.fmt(Math.round(f.profit * n)) + '</b>'
-  };
-}
-
-/* The rate this product last sold at on a live invoice — offered in the Selling price box until a price is saved,
-   so the screen never opens blank on a product that has already been sold. */
-function lastSoldP(pid) {
-  var best = null;
-  (S.invoiceItems || []).forEach(function (it) {
-    if (it.productId !== pid || !(it.unitPrice > 0)) return;
-    var inv = ERP.Invoices && ERP.Invoices.byId ? ERP.Invoices.byId(it.invoiceId) : null;
-    if (!inv || inv.status === 'CANCELLED' || inv.status === 'DRAFT') return;
-    var stamp = (inv.invoiceDate || '') + '|' + (inv.createdAt || '');
-    if (!best || stamp > best.stamp) best = { stamp: stamp, p: it.unitPrice };
-  });
-  return best ? best.p : 0;
+  return { rows: row('Purchase price', buyP) + row('+ Extra cost', extraP) + row('= Total cost per bag', cost, true) };
 }
 
 /* True when transport/labour for this product was already put on a purchase through the Landed costs screen (or
@@ -566,24 +576,34 @@ function productTransactions(pid) {
   return rows.sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); }).slice(0, 20);
 }
 
+/* §28, 2026-09-29: is the buy/extra box on the panel showing something other than what is actually saved
+   right now? Used to warn before the panel's own "Change"/"Edit" links leave for a purchase or receipt and
+   would otherwise lose it — the same guard the old sell-only screen had, rebuilt for the two boxes here. */
+function pricesDirty() {
+  var held = PRICE_HELD;
+  if (!held) return false;
+  var buyEl = D.querySelector('#panel [data-f="buy"]'), extraEl = D.querySelector('#panel [data-f="extra"]');
+  var displayedBuy = held.override || held.cost;
+  if (buyEl) { var b = num(buyEl.value); if (b !== null && M.toP(b) !== displayedBuy) return true; }
+  if (extraEl) { var x = num(extraEl.value); if (x !== null && M.toP(x) !== held.extra) return true; }
+  return false;
+}
+
 global.PANELS.prices = {
-  t: 'Product prices', s: 'The purchase price is fixed to the document — only the selling price is set here', cta: 'Save selling price',
-  /* §27, 2026-09-28 (client: "how can the purchase price and extra cost of already-issued receipts change just
-     because someone edits this screen?" — a fair question). Purchase price and extra cost are now READ-ONLY here:
-     the bag-weighted average of the stock on hand (Inventory.averages), fixed to whichever purchase or stock
-     receipt they were typed on — correcting one means editing that document (Edit links below). The only input
-     left is the selling price, and it can never be saved below what a bag costs (purchase + extra). */
+  t: 'Product prices', s: 'Choose the purchase price and extra cost a sale is costed at', cta: 'Save prices',
+  /* §28, 2026-09-29 (client: "write average of all purchase price of bags available in stock just a label,
+     then the user decides the new purchase price… extra cost of the product will be decided [here]… no need
+     of selling price here — it will be decided while selling"). The average purchase price is a read-only
+     label; below it is the CHOSEN purchase price (defaults to the average, sticks once changed — Prices.setCost)
+     and the extra cost (defaults to 0). No selling price on this screen at all any more. */
   f: function () {
     var pid = PRICE_FOR || ((global.PRODUCTS || [])[0] || {}).id;
     var p = global.prodOf ? global.prodOf(pid) : null;
     if (!p) return '<p class="hint">Product not found.</p>';
     var avg = PRICE_HELD = ERP.Inventory.averages(pid);
     var pend = Prices.pending(pid);
-    /* nothing sold and no selling price ever saved: offer the rate it last actually sold at, so the box is
-       never blank just because a sale happened before any price was ever set here */
-    var soldP = !avg.sell ? lastSoldP(pid) : 0;
-    var shownSell = avg.sell || soldP;
-    var calc = calcHtml(avg.cost, avg.extra, shownSell, 1);
+    var shownBuy = avg.override || avg.cost;
+    var calc = calcHtml(shownBuy, avg.extra);
     var tx = productTransactions(pid);
     var hist = Prices.history(pid).slice(0, 6);
     var readonlyBox = function (label, hint, val) {
@@ -605,23 +625,20 @@ global.PANELS.prices = {
         '</p></div></div>' +
       (pend.length ? '<div class="banner warn">' + I('clock') + '<div><p>' + pend.length +
         ' change is waiting for approval on this product.</p></div></div>' : '') +
+      readonlyBox('Average purchase price (stock on hand)',
+        'The bag-weighted average purchase price of the stock on hand right now, from every purchase and ' +
+        'Add stock — for reference only. Type the box below to choose a different purchase price.', avg.cost) +
       '<div class="f2">' +
-        readonlyBox('Average purchase price',
-          'The bag-weighted average purchase price of the stock on hand, from every purchase and Add stock. ' +
-          'Fixed to those documents — to correct it, edit the purchase or stock receipt below.', avg.cost) +
-        readonlyBox('Average extra cost',
-          'What we pay ourselves on top of the purchase price — transport, labour, loading. Not on the ' +
-          'supplier’s bill, and fixed to the document it was typed on.', avg.extra) +
+        money('buy', 'Purchase price', 'What a sale is costed at. Starts at the average above; once you change ' +
+          'it, this figure stays — even when new stock comes in at a different price — until you change it ' +
+          'again here.', shownBuy,
+          avg.override ? 'Chosen here — the average right now is ' + M.fmt(avg.cost) + '.' : null) +
+        money('extra', 'Extra cost per bag', 'What we pay ourselves on top of the purchase price — transport, ' +
+          'labour, loading. Not on the supplier’s bill. Type 0 if none.', avg.extra) +
       '</div>' +
-      '<div class="pz-calc"><div id="pzCalcRows">' + calc.rows + '</div>' +
-        '<label class="pz-qty"><span>Try it with</span><input data-pzqty inputmode="decimal" value="1"><span>bags</span></label>' +
-        '<div class="pz-ct" id="pzCalcTot">' + calc.total + '</div></div>' +
-      '<div class="f2">' +
-        money('sell', 'Selling price', 'The rate a new invoice for this product opens with. Cannot be set below ' +
-          'what a bag costs (purchase + extra, above).', shownSell,
-          soldP ? 'Filled in from your last sale (' + M.fmt(soldP) + ') — press Save to keep it.' : null) +
-        '<div></div>' +
-      '</div>' +
+      (avg.override ? '<button type="button" class="pz-chg" data-pzuseavg="' + esc(pid) +
+        '">Use the average (' + M.fmt(avg.cost) + ') instead</button>' : '') +
+      '<div class="pz-calc"><div id="pzCalcRows">' + calc.rows + '</div></div>' +
       '<label class="f"><span>Reason for the change (optional)</span><input data-f="reason" ' +
         'placeholder="e.g. Market price increase"></label>' +
       (Prices.approvalRequired()
@@ -655,30 +672,27 @@ global.PANELS.prices = {
   save: function (v) {
     var pid = PRICE_FOR;
     var cur = ERP.Inventory.averages(pid);
-    var sell = v.sell !== undefined && v.sell !== '' ? num(v.sell) : M.toR(cur.sell);
-    if (sell === null) return 'Enter a number only.';
-    if (sell < 0) return 'A price cannot be negative.';
-    var sellP = M.toP(sell);
+    var displayedBuy = cur.override || cur.cost;
+    var buy = v.buy !== undefined && v.buy !== '' ? num(v.buy) : M.toR(displayedBuy);
+    if (buy === null) return 'Enter a number only for the purchase price.';
+    if (buy < 0) return 'A price cannot be negative.';
+    var extra = v.extra !== undefined && v.extra !== '' ? num(v.extra) : M.toR(cur.extra);
+    if (extra === null) return 'Enter a number only for the extra cost.';
+    if (extra < 0) return 'An extra cost cannot be negative.';
     /* Everything that can be refused is refused HERE, inside the panel: once this function returns without an
        error the panel closes and says "Saving…", so a refusal found afterwards looked like a save that worked. */
-    if (sellP === cur.sell) {
-      return 'Nothing to save — that is the selling price already saved. Type a new figure and press Save.';
+    if (M.toP(buy) === displayedBuy && M.toP(extra) === cur.extra) {
+      return 'Nothing to save — those are the figures already in force. Type a new one and press Save.';
     }
-    /* hard block, no override (client's rule: a selling price cannot be set under what a bag costs) */
-    var floorP = cur.cost + cur.extra;
-    if (sellP > 0 && sellP < floorP) {
-      return 'Selling below what a bag costs (purchase ' + M.fmt(cur.cost) + (cur.extra ? ' + extra ' + M.fmt(cur.extra) : '') +
-        ') — every bag would lose ' + M.fmt(floorP - sellP) + '. Nothing has been saved.';
-    }
-    Prices.setSell(pid, sell, { reason: v.reason }).then(function (r) {
+    Prices.setCost(pid, { buy: buy, extra: extra }, { reason: v.reason }).then(function (r) {
       global.paint();
-      if (r.unchanged) { say('That is the selling price already saved — nothing changed.'); return; }
+      if (r.unchanged) { say('Nothing changed.'); return; }
       if (r.pending) { say('Sent for approval — waiting on the owner.'); return; }
-      say('Selling price updated. The old figure is kept in the history.');
+      say('Prices updated. The old figures are kept in the history.');
     }).catch(function (e) {
       say(e && e.validation ? 'NOT saved — ' + e.validation[0] : 'NOT saved — the price could not be stored. Reload and try again.');
     });
-    return { msg: 'Saving selling price…' };
+    return { msg: 'Saving…' };
   }
 };
 
@@ -1126,15 +1140,9 @@ D.addEventListener('click', function (e) {
   }
   if ((t = e.target.closest('[data-pzedit]'))) {
     e.preventDefault(); e.stopPropagation();
-    /* charges belong to the purchase they were typed on (the only "Change" button this panel still has —
-       purchase price and extra cost are read-only text since 2026-09-28): close this screen and open that
-       purchase for editing */
-    var typed = {};
-    D.querySelectorAll('#panel [data-f]').forEach(function (el) {
-      if (el.dataset.f !== 'reason' && el.value !== '' && el.value !== el.defaultValue) typed[el.dataset.f] = el.value;   /* only what the person changed, not what the screen pre-filled */
-    });
-    var pre = PRICE_FOR ? Prices.validate(PRICE_FOR, typed) : { errors: [], values: {} };
-    if (!pre.errors.length && PRICE_FOR && Prices.diff(PRICE_FOR, pre.values).length) {
+    /* charges belong to the purchase they were typed on (the only "Change" button this panel still has):
+       close this screen and open that purchase for editing */
+    if (pricesDirty()) {
       say('You have typed prices here that are not saved yet — press Save first, then change the purchase (closing this screen would lose them).');
       return;
     }
@@ -1146,16 +1154,21 @@ D.addEventListener('click', function (e) {
   if ((t = e.target.closest('[data-editprices]'))) {
     e.preventDefault(); ERP.openPriceEditor(t.dataset.editprices); return;
   }
+  /* §28, 2026-09-29: forget the chosen purchase price and follow the live average again. */
+  if ((t = e.target.closest('[data-pzuseavg]'))) {
+    e.preventDefault(); e.stopPropagation();
+    Prices.setCost(t.dataset.pzuseavg, {}, { clearOverride: true }).then(function (r) {
+      global.paint();
+      say(r.unchanged ? 'Already following the average.' : 'Now following the average purchase price again.');
+    }).catch(function (e2) { say(e2 && e2.validation ? e2.validation[0] : 'Could not change that.'); });
+    return;
+  }
   /* Edit beside a purchase / stock receipt in the product Prices screen's own list (§26, 2026-09-28) —
      leaves the panel, so anything typed but not yet saved here is warned about first, same as the old
      "charges" Change button did. */
   if ((t = e.target.closest('[data-pztxedit]'))) {
     e.preventDefault(); e.stopPropagation();
-    var typedTx = {};
-    D.querySelectorAll('#panel [data-f]').forEach(function (el) {
-      if (el.dataset.f !== 'reason' && el.value !== '' && el.value !== el.defaultValue) typedTx[el.dataset.f] = el.value;
-    });
-    if (Object.keys(typedTx).length) {
+    if (pricesDirty()) {
       say('You have typed prices here that are not saved yet — press Save first, then edit the ' +
         (t.dataset.pztxedit === 'receive' ? 'stock receipt' : 'purchase') + ' (closing this screen would lose them).');
       return;
@@ -1170,19 +1183,17 @@ D.addEventListener('click', function (e) {
 
 D.addEventListener('input', function (e) {
   if (!e.target.dataset) return;
-  /* the price panel's "cost to us" line follows the selling price and the "try it with" quantity as they are
-     typed; purchase price and extra cost are fixed (read-only) here since 2026-09-28, so only these two react */
-  if (e.target.dataset.f === 'sell' || e.target.dataset.pzqty !== undefined) {
+  /* the price panel's "cost to us" line follows the purchase price and extra cost boxes as they are typed
+     (§28, 2026-09-29 — both are editable here now, no selling price / qty box any more) */
+  if (e.target.dataset.f === 'buy' || e.target.dataset.f === 'extra') {
     var held = PRICE_HELD;   /* Inventory.averages() of the product on show — see PANELS.prices.f */
     if (held) {
-      var sellEl = D.querySelector('#panel [data-f="sell"]'), sellN = sellEl ? num(sellEl.value) : null;
-      var sellBox = sellN === null ? held.sell : M.toP(sellN);
-      var qtyEl = D.querySelector('#panel [data-pzqty]'), rowsEl = D.getElementById('pzCalcRows'),
-          totEl = D.getElementById('pzCalcTot');
-      if (rowsEl && totEl) {
-        var c = calcHtml(held.cost, held.extra, sellBox, qtyEl ? num(qtyEl.value) : 1);
-        rowsEl.innerHTML = c.rows; totEl.innerHTML = c.total;
-      }
+      var buyEl = D.querySelector('#panel [data-f="buy"]'), buyN = buyEl ? num(buyEl.value) : null;
+      var buyBox = buyN === null ? (held.override || held.cost) : M.toP(buyN);
+      var extraEl = D.querySelector('#panel [data-f="extra"]'), extraN = extraEl ? num(extraEl.value) : null;
+      var extraBox = extraN === null ? held.extra : M.toP(extraN);
+      var rowsEl = D.getElementById('pzCalcRows');
+      if (rowsEl) rowsEl.innerHTML = calcHtml(buyBox, extraBox).rows;
     }
   }
   if (e.target.dataset.stq !== undefined) {

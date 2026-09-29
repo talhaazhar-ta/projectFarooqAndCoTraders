@@ -467,7 +467,6 @@ global.PAGES.settings = function () {
         '<label class="f"><span>Warn below this margin (%)</span>' +
           '<input data-fcprofit="lowMarginWarnPct" inputmode="decimal" value="' +
           esc(b.lowMarginWarnPct) + '"></label>' +
-        sel('allowSaleBelowCost', 'Selling below cost', [['true', 'Allowed, with a warning'], ['false', 'Blocked']]) +
         sel('warnBelowMinPrice', 'Minimum price warning', [['true', 'Warn'], ['false', 'Do not warn']]) +
         sel('showProfitToStaff', 'Show profit to sales staff', [['false', 'No — owner and accounts only'], ['true', 'Yes']]) +
       '</div></div></div>';

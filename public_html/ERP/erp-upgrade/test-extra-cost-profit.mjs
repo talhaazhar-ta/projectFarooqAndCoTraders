@@ -79,12 +79,15 @@ const run=async()=>{
   await ERP.Prices.set(X.id,{extra:500},{reason:'Transport went up'});
   check('X12 raising the extra later does not rewrite that invoice\'s profit',
     ERP.Profit.invoice(inv.id).profit===M.toP(2000), M.fmt(ERP.Profit.invoice(inv.id).profit));
-  check('X13 the 90 bags already in stock KEEP the extra they came in with (3,200) — a new figure only reaches new bags',
-    ERP.Cost.forSale(X.id,wh)===M.toP(3200), M.fmt(ERP.Cost.forSale(X.id,wh)));
+  /* §28, 2026-09-29 (client: "extra cost… by default extra is 0… but when the user changes it the new
+     value will always be there even when new products are added"): the extra is now ONE figure per
+     PRODUCT, not pinned per warehouse row — raising it reaches the bags already on the shelf immediately. */
+  check('X13 the 90 bags already in stock are costed at the NEW extra immediately (500) — nothing is pinned per row any more',
+    ERP.Cost.forSale(X.id,wh)===M.toP(3500), M.fmt(ERP.Cost.forSale(X.id,wh)));
   await ERP.Purchases.save({supplierId:mill,warehouseId:wh,purchaseDate:'2026-09-25',
     items:[{productId:X.id,quantity:90,unitPrice:3000}]});
-  check('X13b after 90 more bags bought at the new extra (500) the two lots blend: (200+500)/2 = 350 → 3,350',
-    ERP.Cost.forSale(X.id,wh)===M.toP(3350), M.fmt(ERP.Cost.forSale(X.id,wh)));
+  check('X13b 90 more bags at the same purchase price change nothing about the cost — the extra stays the one current figure (3,500)',
+    ERP.Cost.forSale(X.id,wh)===M.toP(3500), M.fmt(ERP.Cost.forSale(X.id,wh)));
 
   /* no extra → nothing changes */
   await ERP.Purchases.save({supplierId:mill,warehouseId:wh,purchaseDate:'2026-09-20',
@@ -97,7 +100,7 @@ const run=async()=>{
   check('X15 with profit worked on purchase price only, the extra is left out', ERP.Cost.forSale(X.id,wh)===M.toP(3000),
     M.fmt(ERP.Cost.forSale(X.id,wh)));
   await ERP.Settings.save({profitCostBasis:'LANDED'});
-  check('X16 and back on the landed basis it is included again', ERP.Cost.forSale(X.id,wh)===M.toP(3350));
+  check('X16 and back on the landed basis it is included again', ERP.Cost.forSale(X.id,wh)===M.toP(3500));
 
   /* an unknown stock cost stays unknown — the extra alone is not a cost price */
   const Z=P.find(p=>p.id!==X.id && p.id!==Y.id && !ERP.Inventory.costOf(p.id,wh) && !(p.buy>0) && !(p.buyP>0));

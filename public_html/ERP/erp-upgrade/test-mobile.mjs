@@ -120,7 +120,9 @@ const run = async () => {
         $('[data-fcline="qty"]').getAttribute('inputmode') === 'decimal');
 
   $$('[data-fcline="qty"]').forEach((el, i) => type(el, String(10 + i)));
-  // Removed rate typing: rate is read-only for Sales and prefilled from sellingPrice
+  /* §28, 2026-09-29: the sale rate is editable and opens blank for a product never sold before — type one
+     on every line, same as any other required box, since nothing pre-fills it any more. */
+  $$('[data-fcline="rate"]').forEach((el) => type(el, '1000'));
   await sleep(80);
   check('M16 the running total is in the action bar',
         $('.fcb-stotals').textContent.includes('Grand total'));

@@ -132,32 +132,12 @@ function blankDraft() {
     salesperson: global.CURRENT_USER || 'Owner',
     paymentMethod: 'Cash', notes: '',
     invoiceDiscount: 0, freight: 0, loading: 0, otherCharges: 0, paidAmount: 0,
-    /* §27, 2026-09-28: extra cost per bag, typed ONCE per PRODUCT on Purchases → Receive stock and
-       Inventory → Add stock — {[productId]: {extraPerBag}}, a rupee string, same shape as every other money
-       box on this screen. Selling price is NOT typed here — only on the product's Prices screen. */
+    /* §28, 2026-09-29: no more per-product extra-cost box on Purchases/Add stock — extra cost and the
+       purchase price a sale is costed at are both chosen once, on the product's own Prices screen
+       (kept as an empty object only so an old saved draft with the field does not break anything reading it). */
     perProduct: {},
     items: []
   };
-}
-
-/* the distinct products on a purchase / receive draft, in the order they first appear, each with its
-   per-product pricing box pre-filled from what is already saved (a fresh line) or already typed */
-function productsOnDraft() {
-  var seen = {}, out = [];
-  (B.draft.items || []).forEach(function (it) {
-    if (!it.productId || seen[it.productId]) return;
-    seen[it.productId] = true;
-    var pp = B.draft.perProduct[it.productId] || (B.draft.perProduct[it.productId] = {});
-    /* an edit (toDraft carries each line's own saved extraPerBag) opens with what was actually saved; a
-       brand-new line falls to the product's own current extra cost. No selling price here any more (2026-09-28,
-       client) — it is set only on the product's Prices screen. */
-    if (pp.extraPerBag === undefined) {
-      pp.extraPerBag = it.extraPerBag !== undefined && it.extraPerBag !== '' ? it.extraPerBag
-        : (function () { var ex = ERP.Inventory.rawExtraOf(it.productId); return ex > 0 ? M.toR(ex) : ''; })();
-    }
-    out.push({ productId: it.productId, product: global.prodOf(it.productId) || {} });
-  });
-  return out;
 }
 
 B.start = function (mode, draft) {
@@ -201,10 +181,10 @@ function lastRate(pid) {
      sale at 6300 showed a loss. The purchase price the owner saved (else the stock's own cost) is offered
      instead; with neither, the box stays empty ("Cost (optional)"). */
   if (B.cfg.cost && !B.cfg.rates && B.cfg.party !== 'supplier') {
-    /* purchase price / extra cost are fixed to the document that typed them (2026-09-28) — the product's own
-       buyP field is no longer kept in step, so the starting figure here is the live bag-weighted average of
-       the stock actually on hand (Inventory.averages), same as the Prices screen shows */
-    var avgC = ERP.Inventory.averages(pid).cost;
+    /* §28, 2026-09-29: the starting figure here is whatever a sale would be costed at right now —
+       Inventory.saleBuyOf — the purchase price CHOSEN on the Prices screen if there is one, else the live
+       bag-weighted average of the stock actually on hand, same as the Prices screen's own label. */
+    var avgC = ERP.Inventory.saleBuyOf(pid, B.draft.warehouseId);
     return avgC > 0 ? avgC : null;
   }
   if (B.cfg.party === 'supplier') {
@@ -216,11 +196,12 @@ function lastRate(pid) {
     return hit ? hit.rate : null;
   }
   if (B.mode === 'sale') {
-    /* §27, 2026-09-28: the sale rate is the product's OWN selling price, set only on the Prices screen —
-       never a one-off "last invoiced at" figure, and never blended per warehouse: the rate is read-only here
-       and can only be changed at the source. */
-    var rate = ERP.Inventory.sellOf(pid, B.draft.warehouseId);
-    return rate > 0 ? rate : null;
+    /* §28, 2026-09-29 (client: "no need of selling price [on the Prices screen] — it will be decided while
+       selling"): the rate is typed fresh on every sale, but the box still opens filled in — with the rate
+       this product last actually sold at on a live invoice, so it is never blank the second time a product
+       is sold. Nothing here is read-only any more; the user can change it freely, including below cost. */
+    var last = ERP.Inventory.lastSoldP(pid);
+    return last > 0 ? last : null;
   }
   return hit ? hit.rate : null;
 }
@@ -520,16 +501,16 @@ function lineRows() {
           '" inputmode="decimal" value="' + esc(it.receivedQty) + '" placeholder="all"></td>';
         case 'rate': {
           if (B.mode === 'sale') {
-            /* read-only, averaged from the stock on hand in this line's warehouse (§25 price lock, extended
-               §26 2026-09-28): purchase + extra bought/added through Purchases and Add stock. The Edit button
-               opens the product's Prices screen — the only place these figures change. */
-            var av = { cost: ERP.Inventory.costOf(it.productId, lw), extra: ERP.Inventory.extraFor(it.productId, lw) };
+            /* §28, 2026-09-29 (client: "the selling price can be low then purchase price, it is ok… remove all
+               restrictions"): the rate is typed fresh on every sale, editable, no floor. The chosen purchase
+               price (Inventory.saleBuyOf — the Prices screen's figure, or the live average when none was
+               chosen) plus the extra cost are shown as a label underneath, purely informational; the Edit
+               button opens the product's Prices screen to change either one. */
+            var av = { cost: ERP.Inventory.saleBuyOf(it.productId, lw), extra: ERP.Inventory.extraFor(it.productId, lw) };
             var avCost = av.cost + av.extra;
-            var noSell = !(M.toP(it.unitPrice) > 0);
             return '<td class="r" data-label="Rate"><input class="fcb-in num" data-fcline="rate" data-ix="' + ix +
-              '" readonly value="' + esc(it.unitPrice) + '" style="background:none;border:none;color:inherit;cursor:default;pointer-events:none">' +
-              (noSell ? '<div class="fcb-costline hint bad">No selling price set — set it on the Prices screen</div>'
-                : avCost ? '<div class="fcb-costline hint">cost ' + M.fmtPlain(avCost) + (av.extra ? ' (' + M.fmtPlain(av.cost) + '+' + M.fmtPlain(av.extra) + ')' : '') + '</div>' : '') +
+              '" inputmode="decimal" value="' + esc(it.unitPrice) + '" placeholder="0">' +
+              (avCost ? '<div class="fcb-costline hint">cost ' + M.fmtPlain(avCost) + (av.extra ? ' (' + M.fmtPlain(av.cost) + '+' + M.fmtPlain(av.extra) + ')' : '') + '</div>' : '') +
               '<button class="icon-btn sm" title="Open the product\'s Prices screen" data-fcpriceedit="' + esc(it.productId || '') + '">' + I('edit') + '</button></td>';
           }
           var rateLbl = (B.mode === 'purchase' || B.mode === 'receive') ? 'Purchase price' : (cfg.cost ? 'Cost' : 'Rate');
@@ -565,19 +546,10 @@ function totalsBar() {
     return row('Lines', String(B.draft.items.length)) +
       row('Total bags', Number(t.totalQty).toLocaleString('en-US'), 'grand');
   }
-  /* Simplified totals for purchase and receive (add stock) modes (§26, 2026-09-28): the extra cost is typed
-     once per product (perProductPricingBlock), so it is totalled here from every line, not from a single
-     draft-level box. It is shown for information only — it is never folded into the purchase price total,
-     which stays exactly what Purchases.save / StockDocs.receive record as unitPrice. */
+  /* §28, 2026-09-29: no more per-product extra-cost box on these two screens — just the purchase price on
+     each line and the total. */
   if (B.mode === 'purchase' || B.mode === 'receive') {
-    var extraTotalP = 0;
-    t.items.forEach(function (i) {
-      if (!i.productId || !(i.quantity > 0)) return;
-      var pp = B.draft.perProduct[i.productId] || {};
-      extraTotalP += M.mul(M.toP(pp.extraPerBag || 0), i.quantity);
-    });
     return row('Subtotal', M.fmt(t.subtotal)) +
-      row('Extra cost (all bags)', M.fmt(extraTotalP)) +
       row('Bags', Number(t.totalQty).toLocaleString('en-US')) +
       row((B.mode === 'purchase' ? 'Purchase' : 'Stock') + ' total', M.fmt(t.grandTotal), 'grand');
   }
@@ -622,51 +594,6 @@ function costPerBagHtml() {
   return parts.join('<br>');
 }
 
-/* Extra cost / Selling price, typed once per PRODUCT — shared by the purchase and Add-stock screens (§26,
-   2026-09-28: client — "Extra cost input and selling price input, no Overall discount / Delivery / Loading /
-   Other charges"). Each row also works out the sum the client asked to see: purchase + extra = cost, selling
-   price, profit/bag — before Save, not just after. */
-function buyOf(pid) {
-  var qty = 0, value = 0;
-  totals().items.forEach(function (i) { if (i.productId === pid && i.quantity > 0) { qty += i.quantity; value += i.quantity * i.unitPrice; } });
-  return qty ? Math.round(value / qty) : 0;
-}
-/* the written sum the client asked to see, beside each product's boxes: purchase + extra = cost — kept as its
-   own function so typing the extra-cost box can refresh JUST this line (see the data-fcprod input handler in
-   06-wiring.js) without redrawing the whole card and losing the caret. No selling price here any more
-   (2026-09-28, client) — it is set only on the product's Prices screen, never on a purchase or Add-stock line. */
-function prodPriceHeadHtml(name, buy, pp) {
-  var extra = M.toP(pp.extraPerBag || 0), cost = buy + extra;
-  return '<b>' + name + '</b>' +
-    (buy ? '<span class="hint">purchase ' + M.fmt(buy) + (extra ? ' + extra ' + M.fmt(extra) : '') +
-      ' = cost ' + M.fmt(cost) + '</span>' : '');
-}
-function refreshProdPriceLine(pid) {
-  var host = global.document.getElementById('fcbpph-' + pid);
-  if (!host) return;
-  var p = global.prodOf(pid) || {};
-  host.innerHTML = prodPriceHeadHtml(esc(p.en || p.ur || pid), buyOf(pid), B.draft.perProduct[pid] || {});
-}
-function perProductPricingBlock() {
-  var products = productsOnDraft();
-  if (!products.length) return '<p class="hint">Add a product above to set its extra cost.</p>';
-  var tip = ERP.info && ERP.info.pair ? ERP.info.pair(
-    'What we pay ourselves on top of the purchase price — transport, labour, loading. Type 0 if none.', 'What is Extra cost?') : { btn: '', box: '' };
-  /* no Selling price box here any more (2026-09-28, client: "how can changing the price here change every
-     already-issued receipt?") — the selling price is set once, only on the product's own Prices screen. */
-  return products.map(function (x, gi) {
-    var name = esc(x.product.en || x.product.ur || x.productId);
-    var pp = B.draft.perProduct[x.productId] || {};
-    return '<div class="fcb-prodprice" data-prodprice="' + esc(x.productId) + '">' +
-      '<div class="fcb-prodprice-h" id="fcbpph-' + esc(x.productId) + '">' + prodPriceHeadHtml(name, buyOf(x.productId), pp) + '</div>' +
-      '<div class="f2">' +
-        '<label class="f"><span>Extra cost / bag' + (gi === 0 ? tip.btn : '') + '</span><input class="num fcb-in" data-fcprod="extraPerBag" data-pid="' + esc(x.productId) +
-          '" inputmode="decimal" value="' + esc(pp.extraPerBag || '') + '" placeholder="0">' + (gi === 0 ? tip.box : '') + '</label>' +
-        '<div></div>' +
-      '</div></div>';
-  }).join('');
-}
-
 function chargesBlock() {
   if (!B.cfg.rates && !B.cfg.cost) {
     return '<div class="card fcb-card"><div class="card-h"><h3>Notes</h3></div><div class="card-b">' +
@@ -691,11 +618,11 @@ function chargesBlock() {
       (hint ? '<span class="hint">' + hint + '</span>' : '') + '</label>';
   };
 
-  /* ── Add-stock (receive) mode: purchase price is on the line; extra cost and selling price are typed
-     once per product here (§26, 2026-09-28) ── */
+  /* ── Add-stock (receive) mode, simplified further (§28, 2026-09-29): just the purchase price on each
+     line — no per-product extra cost box any more. Extra cost is chosen once, on the product's own Prices
+     screen. ── */
   if (B.mode === 'receive') {
-    return '<div class="card fcb-card"><div class="card-h"><h3>Charges &amp; prices</h3></div><div class="card-b">' +
-      perProductPricingBlock() +
+    return '<div class="card fcb-card"><div class="card-h"><h3>Notes</h3></div><div class="card-b">' +
       '<label class="f"><span>Internal note</span><textarea data-fcb="notes" rows="2" ' +
         'placeholder="Optional">' + esc(B.draft.notes || '') + '</textarea></label>' +
       '<div class="fcb-check">' + (t.grandTotal ? 'Stock total ' + M.fmt(t.grandTotal) :
@@ -703,10 +630,10 @@ function chargesBlock() {
       '</div></div></div>';
   }
 
-  /* ── Purchase screen, simplified (§26, 2026-09-28): Overall discount / Delivery / Loading / Other
-     charges are gone — only the purchase price (on the line) and, once per product, extra cost and
-     selling price. A purchase saved before this change keeps its old charges exactly as they were,
-     shown read-only rather than as boxes, so nothing about its total silently moves. ── */
+  /* ── Purchase screen, simplified further (§28, 2026-09-29): only the purchase price (on the line) — no
+     per-product extra cost box any more (chosen once, on the product's own Prices screen). A purchase saved
+     before this change keeps its old charges exactly as they were, shown read-only rather than as boxes, so
+     nothing about its total silently moves. ── */
   if (B.mode === 'purchase') {
     var ip = ERP.info ? ERP.info.pair.bind(ERP.info) : function () { return { btn: '', box: '' }; };
     /* editing a purchase that already has money against it needs the ORIGINAL warning back (a plain
@@ -720,9 +647,8 @@ function chargesBlock() {
       ' of overall discount / delivery / loading / other charges from before this screen was simplified. ' +
       'It is kept exactly as it was, already inside the total below — there is nothing to change here.</p>' +
       '<div id="fcbCpb" class="fcb-cpb hint">' + costPerBagHtml() + '</div></div></div>' : '';
-    return '<div class="card fcb-card"><div class="card-h"><h3>Charges &amp; prices</h3></div><div class="card-b">' +
+    return '<div class="card fcb-card"><div class="card-h"><h3>Payment</h3></div><div class="card-b">' +
       oldChargesHtml +
-      perProductPricingBlock() +
       '<div class="f2 fc-amtpaid">' +
         f('paidAmount', 'Amount paid' + hPaid.btn, null) + hPaid.box +
         '<label class="f"><span>Payment method</span><select data-fcb="paymentMethod">' +
@@ -958,26 +884,16 @@ B.save = function (asDraft) {
   setSaving(true, asDraft ? 'Saving draft…' : 'Saving…');
   var cfg = B.cfg, mode = B.mode, orderId = B.draft.saleOrderId, wasEdit = !!B.editingId;
 
-  /* Extra cost, typed once per PRODUCT (perProductPricingBlock), is folded onto every matching line as
-     extraPerBag — Purchases.save / StockDocs.receive read it from there (§26/§27, 2026-09-28). A NEW draft
-     object is sent to save(); B.draft itself is left untouched. No selling price here any more — it is set
-     only on the product's Prices screen, never on a purchase or Add-stock line. */
+  /* §28, 2026-09-29: no more per-product extra-cost box on Purchases/Add stock — nothing to fold onto the
+     lines any more, extra cost is chosen once on the product's own Prices screen. */
   var saveDraft = B.draft;
-  var pricedProductIds = [];
   if (mode === 'purchase' || mode === 'receive') {
-    saveDraft = Object.assign({}, B.draft, {
-      items: (B.draft.items || []).map(function (it) {
-        var pp = B.draft.perProduct[it.productId] || {};
-        return Object.assign({}, it, { extraPerBag: pp.extraPerBag || '' });
-      })
-    });
     /* Purchase price is required at THIS screen (client — "Ordered ... compulsory ... only the purchasing
        price of each bag has to be written"); the service layer keeps it optional (falls to Inventory.costOf)
        since it is also every test's raw data-setup path. */
     var priceErrs = [];
     (saveDraft.items || []).forEach(function (it, ix) {
       if (it.productId && !(M.toP(it.unitPrice) > 0)) priceErrs.push('Line ' + (ix + 1) + ': enter the purchase price for one bag.');
-      if (it.productId && pricedProductIds.indexOf(it.productId) === -1) pricedProductIds.push(it.productId);
     });
     if (priceErrs.length) { setSaving(false); showErrors(priceErrs); return; }
   }
@@ -986,23 +902,9 @@ B.save = function (asDraft) {
     setSaving(false); B.dirty = false;
     var no = rec.invoiceNumber || rec.purchaseNumber || rec.orderNumber ||
              rec.docNumber || rec.returnNumber || '';
-    /* warn, never block (2026-09-28 decision): a dearer purchase/receipt can push the average cost above a
-       selling price already set on the Prices screen. The purchase/receipt still saves — a supplier's bill
-       is a fact — this just nudges the owner to reprice. */
-    var priceWarn = '';
-    if (mode === 'purchase' || mode === 'receive') {
-      var costHigh = pricedProductIds.filter(function (pid) {
-        var avg = ERP.Inventory.averages(pid), sell = ERP.Inventory.rawSellOf(pid);
-        return sell > 0 && sell < avg.cost + avg.extra;
-      });
-      if (costHigh.length) {
-        priceWarn = ' Note: ' + costHigh.length + ' product' + (costHigh.length === 1 ? '' : 's') +
-          ' now costs more than its selling price — set a new one on the Prices screen.';
-      }
-    }
-    say((mode === 'purchase' && wasEdit ? 'Purchase ' + no + ' updated — stock and the supplier balance follow the change.'
+    say(mode === 'purchase' && wasEdit ? 'Purchase ' + no + ' updated — stock and the supplier balance follow the change.'
         : mode === 'receive' && wasEdit ? 'Stock receipt ' + no + ' updated — stock follows the change.'
-        : cfg.title.replace(/^New /, '') + ' saved' + (no ? ' — ' + no : '') + '.') + priceWarn);
+        : cfg.title.replace(/^New /, '') + ' saved' + (no ? ' — ' + no : '') + '.');
     if (mode === 'sale' && orderId) ERP.Orders.markInvoiced(orderId, rec);
     ERP.Notify.fire(mode === 'sale' ? 'INVOICE_CREATED' : 'TRANSACTION_SAVED', { id: rec.id, ref: no });
 
@@ -1251,7 +1153,6 @@ LIST.exportCsv = function () {
 
 ERP.BuilderUI = {
   addLine: addLine, refreshTotals: refreshTotals, searchProducts: searchProducts,
-  resultRow: resultRow, matches: matches, LIST: LIST, MODES: MODES,
-  refreshProdPriceLine: refreshProdPriceLine
+  resultRow: resultRow, matches: matches, LIST: LIST, MODES: MODES
 };
 })(typeof window !== 'undefined' ? window : globalThis);

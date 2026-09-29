@@ -1031,10 +1031,10 @@ D.addEventListener('click', function (e) {
   var add = h('[data-fcbadd]');
   if (add) { e.preventDefault(); ERP.BuilderUI.addLine(add.dataset.fcbadd); return; }
 
-  /* Sale prices are read-only at the POS (§25, extended §26 2026-09-28) — the pencil beside a line's rate
-     opens the product's Prices screen, a panel over the sale, so the draft is not touched just by looking.
-     Only that panel's own "Edit purchase / Edit receipt" links actually leave the sale, and they carry the
-     unsaved-draft warning themselves (21-settings.js). */
+  /* §28, 2026-09-29: the sale rate is editable now, but the purchase price / extra cost shown under it are
+     still only changed on the product's Prices screen — the pencil opens that screen as a panel over the
+     sale, so the draft is not touched just by looking. Only that panel's own "Edit purchase / Edit receipt"
+     links actually leave the sale, and they carry the unsaved-draft warning themselves (21-settings.js). */
   var pep = h('[data-fcpriceedit]');
   if (pep) {
     e.preventDefault();
@@ -1153,16 +1153,6 @@ D.addEventListener('input', function (e) {
       B.draft[key] = el.value; B.dirty = true; return;
     }
   }
-  /* Extra cost / Selling price, typed once per product (§26, 2026-09-28) — purchase and Add stock share
-     this box. The caret would jump if the whole card re-rendered on every keystroke, so only the totals
-     and this one product's own summary line ("purchase + extra = cost … profit/bag") refresh live. */
-  if (el.dataset.fcprod && B.draft) {
-    var pid = el.dataset.pid, pk = el.dataset.fcprod;
-    var pp = B.draft.perProduct[pid] || (B.draft.perProduct[pid] = {});
-    pp[pk] = el.value; B.dirty = true;
-    ERP.BuilderUI.refreshTotals(); ERP.BuilderUI.refreshProdPriceLine(pid);
-    return;
-  }
 });
 
 D.addEventListener('change', function (e) {
@@ -1175,15 +1165,9 @@ D.addEventListener('change', function (e) {
     }
     B.draft[key] = el.value; B.dirty = true;
     if (key === 'warehouseId') {
-      B.draft.items.forEach(function (it) {
-        it.warehouseId = el.value;
-        /* the read-only sale rate is one figure per product (§27, 2026-09-28) — re-read on a warehouse change
-           anyway, in case the line had no price yet and the product has one now */
-        if (B.mode === 'sale') {
-          var r = ERP.Inventory.sellOf(it.productId, el.value);
-          if (r > 0) it.unitPrice = M.toR(r);
-        }
-      });
+      /* §28, 2026-09-29: the rate is typed by the user now — a warehouse change only moves where the bags
+         come from and refreshes the cost/extra label underneath, never the rate itself. */
+      B.draft.items.forEach(function (it) { it.warehouseId = el.value; });
       ERP.BuilderRender.header(); ERP.BuilderRender.lines(); return;
     }
     if (key === 'customerId' || key === 'supplierId' || key === 'invoiceId') {
@@ -1194,11 +1178,8 @@ D.addEventListener('change', function (e) {
   if (el.dataset.fcline === 'wh' && B.draft) {
     var whIt = B.draft.items[+el.dataset.ix];
     whIt.warehouseId = el.value; B.dirty = true;
-    if (B.mode === 'sale') {
-      /* the sale rate is one figure per product (§27) — this line's warehouse only affects its cost/extra */
-      var whRate = ERP.Inventory.sellOf(whIt.productId, el.value);
-      if (whRate > 0) whIt.unitPrice = M.toR(whRate);
-    }
+    /* §28, 2026-09-29: the rate is typed by the user — this line's warehouse only affects the cost/extra
+       label underneath (re-drawn by the full-line re-render just below), never the rate itself. */
     ERP.BuilderRender.lines(); return;
   }
   if (el.dataset.fcline === 'to' && B.draft) {

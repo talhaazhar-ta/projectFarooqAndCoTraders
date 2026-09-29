@@ -113,40 +113,39 @@ const run=async()=>{
   await ERP.Settings.save({priceApproval:false});
   await ERP.Prices.set(rice.id,{extra:100},{reason:'Reset for the screen checks'});
 
-  /* ── the panel the client actually sees (§27, 2026-09-28: purchase price and extra cost are now
-     READ-ONLY on this screen — fixed to the purchase that carried them, Inventory.averages — a real
-     purchase above (line ~90, 100 bags @ 2,000) means the panel is showing the stock's own average, not
-     just the product's raw saved figures. Only the selling price can be changed here. ── */
+  /* ── the panel the client actually sees (§28, 2026-09-29: the average purchase price is a plain
+     read-only LABEL; below it are two EDITABLE boxes — Purchase price (defaults to the average, sticks
+     once changed) and Extra cost (defaults to whatever is already saved) — there is no selling price on
+     this screen at all any more. A real purchase above (line ~90, 100 bags @ 2,000) means the label is
+     showing the stock's own average, not just the product's raw saved figure. ── */
   ERP.openPriceEditor(rice.id); await sleep(300);
   let panel=$('#panel');
   let labels=Array.from(panel.querySelectorAll('label.f > span:first-child')).map(s=>s.textContent);
   const roVals=()=>Array.from(panel.querySelectorAll('.pz-ro')).map(el=>el.textContent.trim());
-  check('E18 the panel shows "Average extra cost" beside "Average purchase price", both read-only text',
-    labels.indexOf('Average extra cost')>-1 &&
-    labels.indexOf('Average extra cost')===labels.indexOf('Average purchase price')+1 &&
-    !panel.querySelector('[data-f="buy"]') && !panel.querySelector('[data-f="extra"]'), labels.join(' | '));
-  check('E19 it shows the figure actually on the stock — 2,000 purchase + 100 extra',
-    roVals()[0]==='PKR 2,000' && roVals()[1]==='PKR 100', roVals().join(' / '));
+  check('E18 the panel shows editable "Purchase price" and "Extra cost per bag" boxes, and no selling price box',
+    labels.indexOf('Purchase price')>-1 && labels.indexOf('Extra cost per bag')>-1 &&
+    !panel.querySelector('[data-f="sell"]'), labels.join(' | '));
+  check('E19 the average purchase price is a read-only label — 2,000 — and the extra-cost box holds what is already saved — 100',
+    roVals()[0]==='PKR 2,000' && panel.querySelector('[data-f="extra"]').value===String(100),
+    roVals().join(' / ')+' / '+panel.querySelector('[data-f="extra"]').value);
   check('E20 its hint says what goes in it (transport, labour) and that it is not on the supplier\'s bill',
     /transport/i.test(panel.textContent) && /labour/i.test(panel.textContent) && /supplier/i.test(panel.textContent));
-  const live=()=>($('#pzCalcRows')?.textContent||'')+' '+($('#pzCalcTot')?.textContent||'');
-  check('E21 a live line shows the cost to us and the profit per bag',
-    /2,100/.test(live()) && /Profit per bag/.test(live()) && /300/.test(live()), live());
-  type(panel.querySelector('[data-f="sell"]'),'2050');
-  check('E22 the live line follows the selling-price box, showing a loss when the price is under the cost to us',
-    /2,100/.test(live()) && /(−|-)\s?PKR\s?50|Profit per bag.*-50/i.test(live()), live());
-  type(panel.querySelector('[data-f="sell"]'),'2500');
-  panel.querySelector('[data-f="reason"]').value='Market price increase';
+  const live=()=>($('#pzCalcRows')?.textContent||'');
+  check('E21 a live line shows purchase + extra = the cost to us',
+    /2,000/.test(live()) && /2,100/.test(live()) && /Total cost per bag/i.test(live()), live());
+  type(panel.querySelector('[data-f="extra"]'),'275');
+  check('E22 the live line follows the extra-cost box as it is typed', /2,275/.test(live()), live());
+  type(panel.querySelector('[data-f="extra"]'),'100');
+  type(panel.querySelector('[data-f="buy"]'),'2500');
+  panel.querySelector('[data-f="reason"]').value='Owner decided a new purchase price';
   click(panel.querySelector('[data-save]')); await sleep(350);
-  info=ERP.Prices.of(rice.id);
-  check('E25 Save updates only the selling price — purchase price and extra cost are untouched',
-    info.buy===M.toP(2000) && info.extra===M.toP(100) && info.sell===M.toP(2500) && info.totalCost===M.toP(2100),
-    `${info.buy} ${info.extra} ${info.sell}`);
-  check('E25b the stock\'s own recorded cost and extra never moved either', ERP.Inventory.costOf(rice.id,win.WAREHOUSES[1].id)===M.toP(2000) &&
-    ERP.Inventory.extraFor(rice.id,win.WAREHOUSES[1].id)===M.toP(100));
+  check('E25 Save stores the CHOSEN purchase price — a sale is now costed at 2,500, not the 2,000 average',
+    ERP.Inventory.saleBuyOf(rice.id,win.WAREHOUSES[1].id)===M.toP(2500), String(ERP.Inventory.saleBuyOf(rice.id,win.WAREHOUSES[1].id)));
+  check('E25b the stock\'s own RECORDED document cost never moves — only the figure a sale is costed at does',
+    ERP.Inventory.costOf(rice.id,win.WAREHOUSES[1].id)===M.toP(2000) && ERP.Inventory.averages(rice.id).cost===M.toP(2000));
   ERP.openPriceEditor(rice.id); await sleep(250);
   check('E26 it appears in the price history when the panel is opened again',
-    /Selling price/.test($('#panel').textContent) && /Extra cost per bag/.test($('#panel').textContent));
+    /Purchase price \(chosen\)/.test($('#panel').textContent));
   click($('#panel [data-close]')); await sleep(150);
 
   /* ── the bulk price form ── */
@@ -179,29 +178,26 @@ const run=async()=>{
     sheetPlan.problems.length===1 && /should be a number/.test(sheetPlan.problems[0]) && sheetPlan.updates.length===1 &&
     win.prodOf(rice.id).kg===25, JSON.stringify(sheetPlan.problems)+' updates='+sheetPlan.updates.length);
 
-  /* the below-cost rule is now a HARD block, no override (§27, 2026-09-28 — the client's own rule: a
-     selling price cannot be set under what a bag costs, ever, not even by the owner) — this panel used to
-     let a second Save keep it anyway; that escape hatch is gone. (E36 above left rice's sell at 2,450.50 —
-     reset to a known figure first, so this block is not fragile to what ran before it.) */
-  await ERP.Prices.setSell(rice.id,'2500',{reason:'reset for the below-cost checks'});
+  /* the below-cost restriction on this panel is GONE entirely (§28, 2026-09-29 — client's own words:
+     "remove all restrictions"). A purchase price or extra cost far below anything ever actually paid
+     saves without complaint, every time. */
+  await ERP.Prices.setCost(rice.id,{buy:'2500',extra:'66'},{reason:'reset for the restriction checks'});
   const box=k=>$('#panel [data-f="'+k+'"]');
   const reasonBox=()=>$('#panel [data-f="reason"]');
   const errBox=()=>$('#panelErr').textContent;
   ERP.openPriceEditor(rice.id); await sleep(250);
-  type(box('sell'),'2050'); reasonBox().value='Clearance'; click($('#panel [data-save]')); await sleep(300);
-  check('E40 selling under the cost to us refuses Save — nothing saved',
-    /below what a bag costs/i.test(errBox()) && ERP.Prices.of(rice.id).sell===M.toP(2500), errBox());
+  type(box('buy'),'10'); reasonBox().value='Clearance'; click($('#panel [data-save]')); await sleep(300);
+  check('E40 a purchase price far below cost or the average SAVES — no restriction of any kind',
+    ERP.Inventory.saleBuyOf(rice.id,win.WAREHOUSES[1].id)===M.toP(10), String(ERP.Inventory.saleBuyOf(rice.id,win.WAREHOUSES[1].id)));
+  ERP.openPriceEditor(rice.id); await sleep(250);
   click($('#panel [data-save]')); await sleep(300);
-  check('E41 pressing Save again STILL refuses it — no override any more', /below what a bag costs/i.test(errBox()) &&
-    ERP.Prices.of(rice.id).sell===M.toP(2500), errBox());
-  type(box('sell'),'2500');
-  click($('#panel [data-save]')); await sleep(300);
-  check('E41b typing the figure already saved says there is nothing to save',
+  check('E41 pressing Save again with nothing changed says so, and writes no new history row',
     /Nothing to save/.test(errBox()), errBox());
-  type(box('sell'),'2600'); click($('#panel [data-save]')); await sleep(300);
-  check('E42 a corrected selling price, above cost, saves normally', ERP.Prices.of(rice.id).sell===M.toP(2600), String(ERP.Prices.of(rice.id).sell));
+  type(box('buy'),'2500'); click($('#panel [data-save]')); await sleep(300);
+  check('E42 a corrected purchase price saves normally',
+    ERP.Inventory.saleBuyOf(rice.id,win.WAREHOUSES[1].id)===M.toP(2500), String(ERP.Inventory.saleBuyOf(rice.id,win.WAREHOUSES[1].id)));
   click($('#panel [data-close]')); await sleep(150);
-  await ERP.Prices.set(rice.id,{sell:2500,extra:66},{reason:'Back for the restart checks'});
+  await ERP.Prices.set(rice.id,{extra:66},{reason:'Back for the restart checks'});
 
   /* ── it survives a restart ── */
   await ERP.flush(); await sleep(400);

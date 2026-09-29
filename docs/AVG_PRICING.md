@@ -169,3 +169,86 @@ purchases and receipts. Their own proposed fix, adopted as-is:
   match (their `data-f="buy"`/`data-f="extra"` checks, `Prices.revalue` calls and the old "warn twice" panel
   flow no longer apply).
 - Not seen live yet.
+
+## §28 — extra cost off Purchases/Add-stock entirely, a pinned chosen purchase price, a free sale rate (2026-09-29)
+
+### Why
+
+The client, wanting the whole flow simpler still:
+
+> "At purchases receiveStock receipt no need to ask for extra costs for any product added, just purchase
+> price… remove extra prices of the products in charges&prices section. Next same in inventory addStock…
+> no need for extra cost in any product. Now let's talk about inventory editProduct particular product
+> pricessButton section — here only write average of all the purchase prices of the product bags available
+> in the stock just [as a] label, then the user will decide the new purchase price — change average purchase
+> price value to a label, and add an input for the user to add purchase price, by default add average value
+> in there, but when user changes the new value will always be there even when new products are added…
+> extra cost of the product will be decided [here]… no need of selling price here — remove input from here,
+> the selling price will be decided in sales & invoice while selling… while selling you just have to label
+> the purchase price set there along with the extraCost — by default extra cost will be zero and
+> purchasePrice will be average, but when user changes it then the new will always be there even when new
+> products are added… here the selling price can be lower than the purchase price, it is ok, no need to
+> restrict the user — user can sell in a loss — remove all restrictions."
+
+### The model now
+
+- **Extra cost** is a single per-product figure (`p.extraP`, read through `Inventory.rawExtraOf`/`extraFor`) —
+  typed on the Prices screen only, default 0. The 2026-09-26 design this superseded had each stock ROW carry
+  its own moving-average `avgExtraP`, pinned bag-by-bag as new stock arrived at a different figure (item 13
+  of CLAUDE.md). That machinery (`Inventory.apply`'s `EXTRA_FRESH_IN`/`EXTRA_UNDO_OUT` blending, `rowExtraP`)
+  is left in place — untouched — for movement-history bookkeeping (a stock-receipt edit or reversal still
+  needs to know what a specific lot came in at), but `extraFor` no longer reads it for costing a sale: a
+  changed extra now reaches every bag immediately, not just new stock.
+- **The purchase price a sale is costed at** is `Inventory.saleBuyOf(pid, wid)`: `p.costOverrideP` if one has
+  been chosen on the Prices screen, else the live bag-weighted average of the stock on hand
+  (`Inventory.averages(pid).cost`, unchanged machinery — still real purchase/receipt document prices blended
+  by quantity). Choosing a figure on the Prices screen PINS it — a later purchase or receipt at a different
+  price moves the live average but never the chosen figure, until it is changed again on the Prices screen or
+  cleared back to "follow the average" (`Prices.setCost(pid, {}, {clearOverride:true})`, the panel's
+  "Use the average" button).
+- **There is no product-level selling price stored anywhere any more.** `Inventory.rawSellOf`/`sellOf` are
+  thin functions that always return 0 (kept so nothing that still calls them crashes). `Prices.setSell` is
+  gone. The rate a NEW sale line pre-fills with is `Inventory.lastSoldP(pid)` — the rate this product last
+  actually sold at on a live invoice — and the box is fully **editable**, no floor, no restriction: a rate
+  below the cost label underneath saves exactly like any other rate.
+
+### Where each figure is typed
+
+- **Purchases → Receive stock** and **Inventory → Add stock**: only the purchase price, on the line. The
+  "Charges & prices" card is gone from both screens — Add stock is just "Notes"; Purchases keeps its old
+  "kept exactly as it was" banner for pre-§26 purchases plus Payment (amount paid / method / reference).
+  `perProductPricingBlock`, `buyOf`, `prodPriceHeadHtml`, `refreshProdPriceLine` (05-ui-builder.js) and the
+  `data-fcprod` input handler (06-wiring.js) are deleted; `B.draft.perProduct` is kept as an always-empty
+  object so an old saved draft with the field does not break.
+- **The product Prices screen** (`21-settings.js` `PANELS.prices`, `ERP.Prices.setCost`): a read-only label
+  "Average purchase price (stock on hand)", then two editable boxes — Purchase price (defaults to that
+  average) and Extra cost per bag (defaults to 0/whatever is already saved) — and the worked sum (purchase +
+  extra = total cost per bag, no selling price / profit / "try N bags" any more). `Prices.setCost` writes
+  `p.costOverrideP`/`p.extraP` with the same history-row + approval-queue plumbing `Prices.set` uses;
+  `Prices.approve` routes a request whose changes include `costOverride`/`extra` through `setCost` instead of
+  the generic engine. No floor of any kind, on the panel, the service, the approval queue or the Workbench
+  bulk-price tool (`23-workbench.js` — the old `sell` floor is removed from `bulkPrice`/`previewBulkPrice`).
+- **Sales & Invoices → New invoice**: the line's rate is editable, pre-filled from `Inventory.lastSoldP`
+  (blank for a never-sold product — Save still refuses a literal 0 rate, a typo guard, not a price rule). The
+  purchase price + extra cost are shown underneath as a plain informational label
+  (`Inventory.saleBuyOf`/`extraFor`), never read-only, never blocking. The Edit button still opens the
+  product's Prices screen as a side panel to change the chosen cost — it does not touch the sale draft just
+  by opening.
+
+### Stock value is deliberately unaffected
+
+The client's decision (asked and confirmed while planning this): the chosen purchase price only drives what a
+SALE is costed at (`saleCostOf`, invoice `costBuySnapshot`). Stock value (`37-stock-value.js`) keeps reading
+`Inventory.costOf`/`carriedCost` — the real recorded/carried document cost — never `p.costOverrideP`.
+
+### Not done
+
+- The removed `allowSaleBelowCost` setting (Settings → Sales & profit → "Selling below cost") was already
+  dead — nothing ever enforced it — and is gone from the screen; the underlying settings key is left in place,
+  unread, rather than risk a migration.
+- No schema change — app-only, `deploy-erp.sh`.
+- New/updated tests: `test-price-lock.mjs` rewritten for §28; `test-extra-cost.mjs`, `test-extra-cost-average.mjs`
+  (rewritten — its whole premise, row-pinned extra, is superseded), `test-extra-cost-profit.mjs`,
+  `test-purchase-cost.mjs`, `test-add-stock-pricing.mjs`, `test-price-screen.mjs`, `test-ui-kit.mjs` updated to
+  match (no more `data-fcprod`, `Prices.setSell`, read-only sale rate, or below-cost floor).
+- Not seen live yet.
