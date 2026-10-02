@@ -1,0 +1,1 @@
+- 5dffa5c (farooqandcotraders) — Area-wise collection: serial number (restarts per area) replaces the old account code on screen/print/Excel; Area-wise and Collection show "N shops not shown" + Show all shops. Modules: Reports/Collection.
