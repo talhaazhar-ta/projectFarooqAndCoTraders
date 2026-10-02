@@ -58,6 +58,22 @@ const run=async()=>{
   check('C5 the sheet and the statement read one ledger',
     rows.find(r=>r.id===A.id).balance===ERP.Ledger.customerBalance(A.id));
 
+  /* shops owing nothing are filtered by default — the screen must say so and offer them */
+  const fresh={id:'CUST-9998',sh:'Zzz Fresh Shop',ow:'',region:dir.id,ph:'',wa:'',addr:'',lim:null,term:'',bal:0,tot:0,ord:0,bagsOut:0,last:null,active:true};
+  win.CUSTOMERS.push(fresh);
+  rows=Col.rows();
+  check('C5a shops that owe nothing are counted as hidden, not silently dropped',
+    rows.hidden>=1 && !rows.some(r=>r.id===fresh.id), String(rows.hidden));
+  win.go('collection'); await sleep(150);
+  const shownText=()=>{const b=win.document.body.cloneNode(true);b.querySelectorAll('script,style').forEach(e=>e.remove());return b.textContent;};
+  check('C5b the screen says how many are not shown and offers Show all shops',
+    /not shown/.test(shownText()) && !!win.document.querySelector('[data-csshowall]'));
+  win.document.querySelector('[data-csshowall]').dispatchEvent(new win.Event('click',{bubbles:true})); await sleep(150);
+  check('C5c Show all shops lists the new shop and drops the notice',
+    shownText().includes('Zzz Fresh Shop') && !win.document.querySelector('[data-csshowall]'));
+  win.CUSTOMERS.splice(win.CUSTOMERS.indexOf(fresh),1);
+  C.outstandingOnly=true; rows=Col.rows(); sum=Col.summary(rows);
+
   /* ── salesmen and areas ── */
   const man=await Staff.save({name:'Gul Rahman',phone:'0300-1234567',employeeId:'SM-01'});
   await Areas.assignSalesman(dir.id,man.id);

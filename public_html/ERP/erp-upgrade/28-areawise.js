@@ -35,13 +35,14 @@
     build: function (from, to, opts) {
       opts = opts || {};
       var groups = {};
+      var hidden = 0;
       (global.CUSTOMERS || []).forEach(function (c) {
         if (opts.regionId && (c.region || '') !== opts.regionId) return;
         var L = ERP.Ledger.customer(c.id, from || null, to || null);
         var sales = L.debit, collection = L.credit;
         /* a shop with no movement and nothing owing is noise on a collection
-           sheet, so it is left off unless asked for */
-        if (!opts.includeIdle && !sales && !collection && !L.closing) return;
+           sheet, so it is left off unless asked for (the screen says how many) */
+        if (!opts.includeIdle && !sales && !collection && !L.closing) { hidden++; return; }
 
         var region = (global.regionOf && c.region) ? global.regionOf(c.region) : null;
         var key = region ? region.id : (c.region || 'unassigned');
@@ -72,6 +73,8 @@
         g.rows.sort(function (a, b) {
           return (a.name || '').toLowerCase() < (b.name || '').toLowerCase() ? -1 : 1;
         });
+        /* serial number, restarting in each area (replaces the old account code on this list) */
+        g.rows.forEach(function (r, i) { r.sr = i + 1; });
       });
       list.sort(function (a, b) { return a.en < b.en ? -1 : 1; });
 
@@ -82,7 +85,7 @@
         return a;
       }, { opening: 0, sales: 0, collection: 0, balance: 0, shops: 0 });
 
-      return { groups: list, total: total, from: from || null, to: to || null,
+      return { groups: list, total: total, hidden: hidden, from: from || null, to: to || null,
                showOpening: !!total.opening };
     },
 
@@ -92,7 +95,7 @@
       var data = Area.build(from, to, opts);
       var showOpening = data.showOpening;
       var cols = [
-        { key: 'sr', label: 'Code', width: 0.09 },
+        { key: 'sr', label: 'Sr. No.', width: 0.09 },
         { key: 'description', label: 'Name', width: showOpening ? 0.24 : 0.28 },
         { key: 'pack', label: 'Contact #', align: 'center', width: 0.15 }
       ];
@@ -110,7 +113,7 @@
                     _group: true });
         g.rows.forEach(function (r) {
           var row = {
-            sr: r.code || '—',
+            sr: String(r.sr),
             description: r.name + (r.nameUr && r.nameUr !== r.name ? '  ' + r.nameUr : ''),
             descriptionUr: r.nameUr,
             pack: r.contact || '—',
@@ -151,12 +154,12 @@
     /* the sheet, for Excel */
     sheet: function (from, to, opts) {
       var data = Area.build(from, to, opts);
-      var head = ['Code', 'Name', 'Urdu name', 'Contact #', 'Area',
+      var head = ['Sr. No.', 'Name', 'Urdu name', 'Contact #', 'Area',
                   'Opening', 'Total Sales', 'Total Collection', 'Balance'];
       var rows = [];
       data.groups.forEach(function (g) {
         g.rows.forEach(function (r) {
-          rows.push([r.code, r.name, r.nameUr, r.contact, g.en,
+          rows.push([r.sr, r.name, r.nameUr, r.contact, g.en,
                      M.toR(r.opening), M.toR(r.sales), M.toR(r.collection), M.toR(r.balance)]);
         });
       });
@@ -189,10 +192,10 @@
 
   function table(data) {
     if (!data.groups.length) {
-      return '<p class="hint">No shops with activity or a balance in this period.</p>';
+      return data.hidden > 0 ? '' : '<p class="hint">No shops with activity or a balance in this period.</p>';
     }
     var showOpening = data.showOpening;
-    var head = '<tr><th>Code</th><th>Name</th><th>Contact #</th>' +
+    var head = '<tr><th>Sr. No.</th><th>Name</th><th>Contact #</th>' +
       (showOpening ? '<th class="r">Opening</th>' : '') +
       '<th class="r">Total Sales</th><th class="r">Total Collection</th>' +
       '<th class="r">Balance / بقایا</th></tr>';
@@ -203,7 +206,7 @@
           ' <span class="hint">' + g.rows.length + ' shops</span></td></tr>' +
         g.rows.map(function (r) {
           return '<tr>' +
-            '<td data-label="Code" class="mono">' + esc(r.code || '—') + '</td>' +
+            '<td data-label="Sr. No." class="mono">' + r.sr + '</td>' +
             '<td data-label="Name">' + esc(r.name) +
               (r.nameUr && r.nameUr !== r.name
                 ? '<span class="aw-ur"> ' + esc(r.nameUr) + '</span>' : '') + '</td>' +
@@ -249,6 +252,10 @@
         '<button class="btn" data-awpdf>' + I('doc') + 'PDF</button>' +
         '<button class="btn pri" data-awexcel>' + I('sheet') + 'Excel</button>' +
       '</div>' +
+      (data.hidden > 0
+        ? '<p class="hint" style="margin:10px 0 0">' + data.hidden + ' shop' + (data.hidden === 1 ? '' : 's') +
+          ' with no sales or payments in this period ' + (data.hidden === 1 ? 'is' : 'are') + ' not shown. ' +
+          '<button class="btn sm" data-awshowidle>Show all shops</button></p>' : '') +
       table(data) +
       '<div class="aw-sign">Accountant Sign: <span></span></div>' +
     '</div></div>';
@@ -286,6 +293,7 @@
 
   D.addEventListener('click', function (e) {
     if (!e.target.closest) return;
+    if (e.target.closest('[data-awshowidle]')) { e.preventDefault(); AW.includeIdle = true; global.paint(); return; }
     if (e.target.closest('[data-awprint]') || e.target.closest('[data-awpdf]')) {
       e.preventDefault();
       var pdf = !!e.target.closest('[data-awpdf]');

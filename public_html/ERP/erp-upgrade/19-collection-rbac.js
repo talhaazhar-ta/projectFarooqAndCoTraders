@@ -113,7 +113,12 @@ var Collection = ERP.Collection = {
         limit: c.limit || 0
       };
     });
-    if (o.outstandingOnly) list = list.filter(function (r) { return r.balance > 0; });
+    var hidden = 0;
+    if (o.outstandingOnly) {
+      var before = list.length;
+      list = list.filter(function (r) { return r.balance > 0; });
+      hidden = before - list.length;
+    }
     var min = o.minBalance ? M.toP(o.minBalance) : 0;
     if (min) list = list.filter(function (r) { return r.balance >= min; });
     var sort = o.sort || 'balance';
@@ -125,6 +130,7 @@ var Collection = ERP.Collection = {
       if (sort === 'lastpay') return (a.lastPaymentDate || '') < (b.lastPaymentDate || '') ? -1 : 1;
       return b.balance - a.balance;
     });
+    list.hidden = hidden;
     return list;
   },
   summary: function (rows) {
@@ -321,6 +327,10 @@ global.PAGES.collection = function () {
         ? '<button class="btn" data-csexcel="1">' + I('sheet') + 'Excel</button>' +
           '<button class="btn pri" data-csprintopen="1">' + I('print') + 'Collection sheet</button>' : '') +
     '</div>' +
+    (rows.hidden > 0
+      ? '<p class="hint" style="margin:0 0 10px">' + rows.hidden + ' shop' + (rows.hidden === 1 ? '' : 's') +
+        ' that owe' + (rows.hidden === 1 ? 's' : '') + ' nothing ' + (rows.hidden === 1 ? 'is' : 'are') + ' not shown. ' +
+        '<button class="btn sm" data-csshowall>Show all shops</button></p>' : '') +
     (rows.length
       ? '<div class="card"><div class="card-b" style="padding:0"><div class="tw">' +
         '<table class="fcb-list"><thead><tr><th>Shop</th><th>Owner</th><th>Phone</th><th>Area</th>' +
@@ -484,6 +494,7 @@ D.addEventListener('click', function (e) {
     global.go('collection');
     return;
   }
+  if (e.target.closest('[data-csshowall]')) { e.preventDefault(); C.outstandingOnly = false; global.paint(); return; }
   if (e.target.closest('[data-csprintopen]')) { e.preventDefault(); Collection.print(); return; }
   if ((t = e.target.closest('[data-csprint]'))) {
     e.preventDefault();

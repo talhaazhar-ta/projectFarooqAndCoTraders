@@ -103,11 +103,35 @@ async function main() {
   const m = ERP.AreaReport.docModel(null, null, {});
   const labels = m.columns.map(c => c.label);
   check('A13 the document has the template columns',
-    ['Code', 'Name', 'Contact #', 'Total Sales', 'Total Collection'].every(l => labels.includes(l)),
+    ['Sr. No.', 'Name', 'Contact #', 'Total Sales', 'Total Collection'].every(l => labels.includes(l)),
     labels.join(' | '));
   check('A14 the balance column carries the Urdu heading',
     labels.some(l => /بقایا/.test(l)), labels.join(' | '));
   check('A15 each area gets a heading row', m.rows.some(r => r._group));
+
+  /* serial numbers instead of old codes; restart in each area, in name order */
+  check('A15a every row has a serial that runs 1..n inside its area',
+    data.groups.every(g => g.rows.every((r, i) => r.sr === i + 1)));
+  check('A15b the print document shows serials, not old codes',
+    m.rows.filter(r => !r._group && !r._subtotal).every(r => /^\d+$/.test(r.sr)) &&
+    m.rows.filter(r => !r._group && !r._subtotal)[0].sr === '1');
+
+  /* a brand-new shop (no sales yet) is hidden by default — but the screen says so and can show it */
+  const fresh = { id: 'CUST-9999', sh: 'Zzz Fresh Shop', ow: '', region: c1.region, ph: '', wa: '', addr: '',
+                  lim: null, term: '', bal: 0, tot: 0, ord: 0, bagsOut: 0, last: null, active: true };
+  w.CUSTOMERS.push(fresh);
+  const hid = ERP.AreaReport.build(null, null, {});
+  check('A15c a shop with no activity is counted as hidden', hid.hidden >= 1 &&
+    !hid.groups.some(g => g.rows.some(r => r.customerId === fresh.id)), String(hid.hidden));
+  w.go('areawise'); await sleep(150);
+  const bodyText = () => { const b = D.body.cloneNode(true); b.querySelectorAll('script,style').forEach(e => e.remove()); return b.textContent; };
+  check('A15d the screen tells how many shops are not shown', /not shown/.test(bodyText()) && !!$('[data-awshowidle]'));
+  check('A15e the screen header is Sr. No., no Code column',
+    $$('.aw-tbl thead th').map(t => t.textContent)[0] === 'Sr. No.');
+  click($('[data-awshowidle]')); await sleep(150);
+  check('A15f "Show all shops" lists the new shop and drops the notice',
+    bodyText().includes('Zzz Fresh Shop') && !$('[data-awshowidle]'));
+  w.CUSTOMERS.splice(w.CUSTOMERS.indexOf(fresh), 1);
   check('A16 each area gets a subtotal row', m.rows.some(r => r._subtotal));
   check('A17 the footer is the grand total',
     m.itemsFooter && /TOTAL VALUE/.test(m.itemsFooter.description));
@@ -118,7 +142,7 @@ async function main() {
   /* ── the sheet ───────────────────────────────────────────────────────── */
   const sh = ERP.AreaReport.sheet(null, null, {});
   check('A20 the Excel sheet has a header row',
-    sh.rows.some(r => r[0] === 'Code' && r.includes('Total Collection')));
+    sh.rows.some(r => r[0] === 'Sr. No.' && r.includes('Total Collection')));
   check('A21 it keeps the Urdu name in its own column',
     sh.rows.some(r => r[1] === 'Urdu name') || sh.rows[3][2] === 'Urdu name',
     JSON.stringify(sh.rows[3]));
