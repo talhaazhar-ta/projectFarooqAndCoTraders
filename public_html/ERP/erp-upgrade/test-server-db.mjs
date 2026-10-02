@@ -72,7 +72,10 @@ async function scenario(w) {
   R.adj = await ERP.StockDocs.adjust({ warehouseId: wh, reason: 'Physical count', date: '2026-09-09', items: [{ productId: prods[2].id, quantity: 7, direction: 'IN' }, { productId: prods[3].id, quantity: 4, direction: 'OUT' }] });
   R.cnv = await ERP.StockDocs.convert({ warehouseId: wh, reason: 'Re-printed', date: '2026-09-09', items: [{ productId: prods[5].id, toProductId: prods[6].id, quantity: 25 }] });
   R.emp = await ERP.Employees.save({ name: 'Sher Bahadur', role: 'Driver', phone: '0300-1234567', monthlySalary: 30000 });
-  R.sal = await ERP.Payroll.pay({ employeeId: R.emp.id, amount: 30000, date: '2026-09-10' });
+  /* a new person's first payable month is the month they were added (the real month, whenever this runs) — a fixed
+     September date made this scenario fail the day the calendar moved into October */
+  const now = new Date(), isoNow = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  R.sal = await ERP.Payroll.pay({ employeeId: R.emp.id, amount: 30000, date: isoNow });
   const wheat = w.PRODUCTS.find(p => p.id === 'PRD-0097'), flour = w.PRODUCTS.find(p => p.id === 'PRD-0004'), chokar = w.PRODUCTS.find(p => p.id === 'PRD-0041');
   await ERP.Purchases.save({ supplierId: sup, warehouseId: wh, purchaseDate: '2026-09-11', items: [{ productId: wheat.id, quantity: 500, unitPrice: 100 }] });
   R.mill = await ERP.Milling.save({ millId: sup, warehouseId: wh, jobDate: '2026-09-16', settle: 'NET',
@@ -174,7 +177,7 @@ async function main() {
   const A = await boot(server);
   let R;
   try { R = await scenario(A.w); check('C1 purchases, invoices, drafts, cancellation, payments, returns, transfers, adjustments, payroll and a milling job all save', true); }
-  catch (e) { check('C1 the whole scenario saves on the server', false, e.message); }
+  catch (e) { check('C1 the whole scenario saves on the server', false, e.message || JSON.stringify(e)); }
   const aErrors = A.errors.slice();
   check('C2 no script errors in the page', aErrors.length === 0, aErrors.join(' | ').slice(0, 300));
   check('C3 the invoices are on the SERVER (6 issued + 1 draft)', server.count('invoices') === 7, String(server.count('invoices')));

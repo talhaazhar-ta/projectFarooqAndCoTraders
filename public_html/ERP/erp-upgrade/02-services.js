@@ -195,14 +195,53 @@ var Inventory = ERP.Inventory = {
     var r = wid ? S.inventory[ikey(pid, wid)] : null;
     return r && typeof r.avgExtraP === 'number' ? r.avgExtraP : Inventory.rawExtraOf(pid);
   },
+  /* §29, 2026-10-02 (client: a separate Carriage / transport box on the purchase invoice): the carriage per bag of
+     the bags on hand in one warehouse — a bag-weighted average blended by Inventory.apply exactly like avgCostP.
+     Bags that never had carriage (Add stock, opening stock, anything before this existed) count as 0. */
+  rowCarriageP: function (pid, wid) {
+    var r = wid ? S.inventory[ikey(pid, wid)] : null;
+    return r && typeof r.avgCarriageP === 'number' ? r.avgCarriageP : 0;
+  },
+  /* the carriage per bag of the product's most recent purchase (any warehouse, even if sold out) — the fallback
+     Inventory.averages uses when nothing is on hand */
+  lastKnownCarriage: function (pid) {
+    var best = null;
+    (S.purchaseItems || []).forEach(function (it) {
+      if (it.productId !== pid) return;
+      var pu = ERP.Purchases && ERP.Purchases.byId ? ERP.Purchases.byId(it.purchaseId) : null;
+      if (!pu || pu.status === 'CANCELLED') return;
+      var stamp = (pu.purchaseDate || '') + '|' + (pu.createdAt || '');
+      if (!best || stamp >= best.stamp) best = { stamp: stamp, c: it.carriageUnitP > 0 ? it.carriageUnitP : 0 };
+    });
+    return best ? best.c : 0;
+  },
+  /* THE one extra cost a sale carries per bag (client, 2026-10-02: "extra cost means carriage / transport — only one
+     input"). The figure pinned on the Prices screen wins (0 is a valid pin; a product that already had an Extra cost
+     saved counts as pinned at it), else the live bag-weighted average of the carriage typed on the purchases of the
+     stock on hand. Left out under the "purchase price only" profit basis. */
+  saleCarriageOf: function (pid, wid) {
+    var basis = ERP.Settings && ERP.Settings.get ? ERP.Settings.get().profitCostBasis : null;
+    if (basis === 'PURCHASE') return 0;
+    return Inventory.effectiveExtra(pid);
+  },
+  /* the pinned extra/carriage figure for a product, or null when it follows the average */
+  extraPin: function (pid) {
+    var p = global.prodOf && global.prodOf(pid);
+    if (!p) return null;
+    if (typeof p.carriageOverrideP === 'number' && p.carriageOverrideP >= 0) return p.carriageOverrideP;
+    var legacy = Inventory.rawExtraOf(pid);
+    return legacy > 0 ? legacy : null;
+  },
+  effectiveExtra: function (pid) {
+    var pin = Inventory.extraPin(pid);
+    return pin !== null ? pin : Inventory.averages(pid).carriage;
+  },
   /* the extra a sale out of this warehouse carries (0 under the "purchase price only" profit basis).
      §28, 2026-09-29: ONE extra cost per product, typed on the Prices screen (client: no more per-row
      blending — a typed figure holds until it is changed). The row-level avgExtraP machinery (rowExtraP)
      is left in place for movement history/reversal bookkeeping but is no longer read for costing a sale. */
   extraFor: function (pid, wid) {
-    var basis = ERP.Settings && ERP.Settings.get ? ERP.Settings.get().profitCostBasis : null;
-    if (basis === 'PURCHASE') return 0;
-    return Inventory.rawExtraOf(pid);
+    return Inventory.saleCarriageOf(pid, wid);   /* §29: extra cost = carriage / transport, one figure */
   },
   /* §28, 2026-09-29 (client: "no need of selling price — decided while selling"): the selling price is
      typed fresh on every sale line, so there is no stored product selling price to read here any more.
@@ -227,24 +266,29 @@ var Inventory = ERP.Inventory = {
      the chosen purchase price if one has been set (0 if the price is still following the average). `bags`
      is 0 (and `cost` falls back to a carried/last-known figure) when nothing is in stock. */
   averages: function (pid) {
-    var qty = 0, costV = 0;
+    var qty = 0, costV = 0, carV = 0;
     Object.keys(S.inventory).forEach(function (k) {
       var r = S.inventory[k];
       if (r.productId !== pid || !(r.qty > 0)) return;
       var c = r.avgCostP || Inventory.carriedCost(pid, r.warehouseId) || 0;
-      qty += r.qty; costV += c * r.qty;
+      qty += r.qty; costV += c * r.qty; carV += (typeof r.avgCarriageP === 'number' ? r.avgCarriageP : 0) * r.qty;
     });
     var p = global.prodOf && global.prodOf(pid);
     var override = p && p.costOverrideP > 0 ? p.costOverrideP : 0;
+    /* §29: carriage — its own bag-weighted average, plus the figure pinned on the Prices screen (null = following) */
+    var carOverride = Inventory.extraPin(pid);
+    var carriage = qty ? Math.round(carV / qty) : Inventory.lastKnownCarriage(pid);
     if (!qty) {
       /* nothing on hand in ANY warehouse — a fully sold-out product used to show its cost as 0 here (the
          only fallback was the product's own p.buy, and nothing writes that any more since the Prices
          screen stopped revaluing cost/extra, §27 2026-09-28). Fall back to the last purchase/receipt this
          product ever had, so the read-only Prices screen still shows something real instead of "—". */
       var lastKnown = Inventory.lastKnownCost(pid);
-      return { cost: lastKnown || (p && p.buy ? M.toP(p.buy) : 0), extra: Inventory.rawExtraOf(pid), override: override, bags: 0 };
+      return { cost: lastKnown || (p && p.buy ? M.toP(p.buy) : 0), extra: carOverride !== null ? carOverride : carriage, override: override, bags: 0,
+               carriage: carriage, carriageOverride: carOverride };
     }
-    return { cost: Math.round(costV / qty), extra: Inventory.rawExtraOf(pid), override: override, bags: qty };
+    return { cost: Math.round(costV / qty), extra: carOverride !== null ? carOverride : carriage, override: override, bags: qty,
+             carriage: carriage, carriageOverride: carOverride };
   },
   /* the purchase price of the most recent purchase/receipt this product ever had, in ANY warehouse,
      regardless of whether any of those bags are still in stock — the fallback `averages()` uses once a
@@ -359,6 +403,20 @@ var Inventory = ERP.Inventory = {
         var exOut = -delta;
         r.avgExtraP = Math.max(0, Math.round(((r.qty + exOut) * r.avgExtraP - exOut * exGiven) / r.qty));
       }
+      /* §29: carriage per bag on hand, blended by bags like avgCostP. Bags that come in as a fresh cost (a purchase
+         without carriage, Add stock, opening stock, a mill receipt) bring 0 and so dilute the average; a transfer or
+         conversion brings the source row's figure; anything else that puts bags back (a customer return) leaves it. */
+      var carGiven = typeof mv.carriageCostP === 'number' ? mv.carriageCostP : null;
+      if (delta > 0 && (carGiven !== null || isFreshCostIn(mv))) {
+        var carIn = carGiven !== null ? carGiven : 0;
+        var carHad = r.qty - delta;
+        var carPrev = typeof r.avgCarriageP === 'number' ? r.avgCarriageP : 0;
+        r.avgCarriageP = carHad > 0 ? Math.round((carHad * carPrev + delta * carIn) / (carHad + delta)) : carIn;
+      } else if (delta < 0 && carGiven !== null && COST_UNDO_OUT[mv.kind] && r.qty > 0 && typeof r.avgCarriageP === 'number') {
+        /* a reversal / edit takes bags back out at the carriage they came in with */
+        var carOut = -delta;
+        r.avgCarriageP = Math.max(0, Math.round(((r.qty + carOut) * r.avgCarriageP - carOut * carGiven) / r.qty));
+      }
       /* no per-row selling price any more (2026-09-28) — there is one selling price per PRODUCT
          (Inventory.rawSellOf), set only on the product Prices screen; stock arriving never touches it. */
     }
@@ -377,6 +435,7 @@ function applyRecord(api, mv, r, delta) {
     ref: mv.ref || '', refType: mv.refType || '', note: mv.note || '',
     unitCostP: mv.unitCostP || 0, userId: currentUser()
   };
+  if (typeof mv.carriageCostP === 'number') rec.carriageCostP = mv.carriageCostP;
   api.put('stockMovements', rec);
   S.movements.unshift(rec);
   if (S.movements.length > 8000) S.movements.length = 8000;
@@ -524,6 +583,11 @@ var Validate = ERP.Validate = {
         if (recv > q) errs.push('Line ' + (i + 1) + ': Received (' + recv + ') cannot be more than Ordered (' + q + ').');
       }
     });
+    /* §29: carriage / transport for the whole purchase — a plain non-negative number */
+    var car = draft.carriage;
+    if (car !== undefined && car !== null && String(car).trim() !== '') {
+      if (!/^\s*\d+(\.\d+)?\s*$/.test(String(car).replace(/,/g, ''))) errs.push('Carriage / transport: enter a number only, not below zero.');
+    }
     return errs;
   }
 };
@@ -1300,6 +1364,7 @@ var Purchases = ERP.Purchases = {
       invoiceDiscount: M.toR(Math.max(0, (pu.discountAmount || 0) - lineDisc)),
       freight: M.toR(pu.freightAmount), loading: M.toR(pu.loadingAmount),
       otherCharges: M.toR(pu.otherCharges),
+      carriage: pu.carriageAmount > 0 ? M.toR(pu.carriageAmount) : '',
       paidAmount: M.toR(Purchases.paidFor(pu.id)),
       items: items.map(function (it) {
         var recv = it.receivedQty === undefined ? it.quantity : it.receivedQty;
@@ -1342,6 +1407,9 @@ var Purchases = ERP.Purchases = {
       return Promise.reject({ validation: [twice, 'If you really want both, press Save again and it will be kept.'], confirmable: true });
     }
     draft.id = draft.id || FDB.uid('pur');
+    /* §29: the whole-purchase carriage shared equally over every ORDERED bag (client: "equally per bag") */
+    var carriageP = M.toP(String(draft.carriage === undefined || draft.carriage === null ? '' : draft.carriage).replace(/,/g, ''));
+    var carriagePerBag = carriageP > 0 && totals.totalQty > 0 ? Math.round(carriageP / totals.totalQty) : 0;
     var existing = Purchases.byId(draft.id);
     var revision = (draft.revision === undefined || draft.revision === null ? 0 : draft.revision);
     var opId = (draft.clientOpId || draft.id) + '#' + revision;
@@ -1363,6 +1431,8 @@ var Purchases = ERP.Purchases = {
           subtotal: totals.subtotal, discountAmount: totals.discountAmount,
           taxAmount: totals.taxAmount, freightAmount: totals.freightAmount,
           loadingAmount: totals.loadingAmount, otherCharges: totals.otherCharges,
+          /* §29: carriage / transport — raises the cost of the bags only; NOT in grandTotal or the supplier's balance */
+          carriageAmount: carriageP,
           grandTotal: totals.grandTotal, paidAmount: totals.paidAmount,
           balanceAmount: totals.grandTotal - totals.paidAmount,
           paymentStatus: Calc.paymentStatus(totals.grandTotal, totals.paidAmount),
@@ -1394,6 +1464,8 @@ var Purchases = ERP.Purchases = {
         oldItems.forEach(function (o) {
           oldExtra[o.id] = typeof o.extraUnitP === 'number' ? o.extraUnitP : Inventory.rowExtraP(o.productId, o.warehouseId);
         });
+        var oldCarriage = {};
+        oldItems.forEach(function (o) { oldCarriage[o.id] = o.carriageUnitP > 0 ? o.carriageUnitP : 0; });
         if (existing) {
           /* what actually arrived comes back out — judged per line, because a later
              delivery (receiveMore) added bags without ever setting stockApplied.
@@ -1403,7 +1475,7 @@ var Purchases = ERP.Purchases = {
             var was = o.receivedQty === undefined ? o.quantity : o.receivedQty;
             if (!(was > 0)) return;
             Inventory.apply(api, { productId: o.productId, warehouseId: o.warehouseId,
-              qtyDelta: -was, extraCostP: oldExtra[o.id],
+              qtyDelta: -was, extraCostP: oldExtra[o.id], carriageCostP: oldCarriage[o.id],
               /* the cost these bags actually blended into avgCostP with: the landed figure once charges were
                  allocated onto it (17-profit.js), else the raw purchase price */
               unitCostP: o.landedUnitCost || o.unitPrice,
@@ -1439,11 +1511,12 @@ var Purchases = ERP.Purchases = {
           var keptLine = old && old.productId === r.productId;
           r.extraUnitP = typedExtra !== null ? typedExtra
             : (keptLine ? oldExtra[old.id] : Inventory.rawExtraOf(r.productId));
+          r.carriageUnitP = carriagePerBag;     /* §29: fixed on the line when saved, so a later delivery carries the same */
           api.put('purchaseItems', r); S.purchaseItems.push(r);
           if (receivedQty > 0) {
             Inventory.apply(api, {
               productId: r.productId, warehouseId: r.warehouseId, qtyDelta: receivedQty,
-              extraCostP: r.extraUnitP,
+              extraCostP: r.extraUnitP, carriageCostP: carriagePerBag,
               kind: 'PURCHASE_IN', ref: rec.purchaseNumber, refType: 'PURCHASE',
               note: rec.supplierNameSnapshot, date: rec.purchaseDate, unitCostP: r.unitPrice
             });
@@ -1520,7 +1593,7 @@ var Purchases = ERP.Purchases = {
             api.put('purchaseItems', it);
             Inventory.apply(api, {
               productId: it.productId, warehouseId: it.warehouseId, qtyDelta: q,
-              extraCostP: it.extraUnitP,
+              extraCostP: it.extraUnitP, carriageCostP: it.carriageUnitP > 0 ? it.carriageUnitP : 0,
               kind: 'PURCHASE_IN', ref: pu.purchaseNumber, refType: 'PURCHASE',
               note: 'Later delivery', date: todayISO(), unitCostP: it.unitPrice
             });

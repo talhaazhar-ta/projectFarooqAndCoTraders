@@ -65,7 +65,7 @@ const run=async()=>{
   ERP.openPriceEditor(X.id); await sleep(300);
   const rows=()=>$('#pzCalcRows').textContent;
   check('P7 the screen writes the sum: purchase 6,000, + extra 200, = total cost 6,200',
-    /Purchase price\s*PKR 6,000/.test(rows()) && /\+ Extra cost\s*PKR 200/.test(rows()) && /= Total cost per bag\s*PKR 6,200/.test(rows()), rows());
+    /Purchase price\s*PKR 6,000/.test(rows()) && /\+ Extra cost \(carriage \/ transport\)\s*PKR 200/.test(rows()) && /= Total cost per bag\s*PKR 6,200/.test(rows()), rows());
   type(box('extra'),'350');
   check('P8 the live line follows the extra-cost box as it is typed', /= Total cost per bag\s*PKR 6,350/.test(rows()), rows());
   type(box('extra'),'200');

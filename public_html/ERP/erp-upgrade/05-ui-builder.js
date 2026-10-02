@@ -132,6 +132,7 @@ function blankDraft() {
     salesperson: global.CURRENT_USER || 'Owner',
     paymentMethod: 'Cash', notes: '',
     invoiceDiscount: 0, freight: 0, loading: 0, otherCharges: 0, paidAmount: 0,
+    carriage: '',      /* §29: Carriage / transport for the whole purchase (raises the bags' cost, not the supplier's bill) */
     /* §28, 2026-09-29: no more per-product extra-cost box on Purchases/Add stock — extra cost and the
        purchase price a sale is costed at are both chosen once, on the product's own Prices screen
        (kept as an empty object only so an old saved draft with the field does not break anything reading it). */
@@ -506,11 +507,15 @@ function lineRows() {
                price (Inventory.saleBuyOf — the Prices screen's figure, or the live average when none was
                chosen) plus the extra cost are shown as a label underneath, purely informational; the Edit
                button opens the product's Prices screen to change either one. */
+            /* §29: the extra cost IS the carriage / transport — one figure (pinned on the Prices screen, else the
+               carriage average of the stock on hand) */
             var av = { cost: ERP.Inventory.saleBuyOf(it.productId, lw), extra: ERP.Inventory.extraFor(it.productId, lw) };
             var avCost = av.cost + av.extra;
+            var avParts = [M.fmtPlain(av.cost)];
+            if (av.extra) avParts.push(M.fmtPlain(av.extra));
             return '<td class="r" data-label="Rate"><input class="fcb-in num" data-fcline="rate" data-ix="' + ix +
               '" inputmode="decimal" value="' + esc(it.unitPrice) + '" placeholder="0">' +
-              (avCost ? '<div class="fcb-costline hint">cost ' + M.fmtPlain(avCost) + (av.extra ? ' (' + M.fmtPlain(av.cost) + '+' + M.fmtPlain(av.extra) + ')' : '') + '</div>' : '') +
+              (avCost ? '<div class="fcb-costline hint">cost ' + M.fmtPlain(avCost) + (avParts.length > 1 ? ' (' + avParts.join('+') + ')' : '') + '</div>' : '') +
               '<button class="icon-btn sm" title="Open the product\'s Prices screen" data-fcpriceedit="' + esc(it.productId || '') + '">' + I('edit') + '</button></td>';
           }
           var rateLbl = (B.mode === 'purchase' || B.mode === 'receive') ? 'Purchase price' : (cfg.cost ? 'Cost' : 'Rate');
@@ -549,9 +554,11 @@ function totalsBar() {
   /* §28, 2026-09-29: no more per-product extra-cost box on these two screens — just the purchase price on
      each line and the total. */
   if (B.mode === 'purchase' || B.mode === 'receive') {
+    var carP = B.mode === 'purchase' ? M.toP(String(B.draft.carriage || '').replace(/,/g, '')) : 0;
     return row('Subtotal', M.fmt(t.subtotal)) +
       row('Bags', Number(t.totalQty).toLocaleString('en-US')) +
-      row((B.mode === 'purchase' ? 'Purchase' : 'Stock') + ' total', M.fmt(t.grandTotal), 'grand');
+      row((B.mode === 'purchase' ? 'Purchase' : 'Stock') + ' total', M.fmt(t.grandTotal), 'grand') +
+      (carP > 0 ? row('Carriage (not on the supplier’s bill)', M.fmt(carP)) : '');
   }
   var prev = cfg.party === 'customer' && B.draft.customerId ? ERP.Ledger.customerBalance(B.draft.customerId) : 0;
   return row('Subtotal', M.fmt(t.subtotal)) +
@@ -592,6 +599,21 @@ function costPerBagHtml() {
     return label + bits.join(' &nbsp;·&nbsp; ');
   });
   return parts.join('<br>');
+}
+
+/* §29: the live line under the Carriage box — what each bag takes on, the same split Purchases.save makes
+   (carriage ÷ every ordered bag, equally). */
+function carriageLineHtml() {
+  var t = totals();
+  var car = M.toP(String(B.draft.carriage === undefined || B.draft.carriage === null ? '' : B.draft.carriage).replace(/,/g, ''));
+  if (!(car > 0)) return '';
+  var bags = Number(t.totalQty) || 0;
+  if (!(bags > 0)) return 'Add a product line to see the carriage per bag.';
+  var per = Math.round(car / bags);
+  var out = '<b>' + M.fmt(car) + ' &divide; ' + bags.toLocaleString('en-US') + ' bags = ' + M.fmt(per) + ' per bag</b>';
+  var lines = t.items.filter(function (i) { return i.productId && Number(i.quantity) > 0; });
+  if (lines.length === 1) out += ' &nbsp;·&nbsp; each bag costs ' + M.fmt(lines[0].unitPrice + per);
+  return out;
 }
 
 function chargesBlock() {
@@ -647,8 +669,14 @@ function chargesBlock() {
       ' of overall discount / delivery / loading / other charges from before this screen was simplified. ' +
       'It is kept exactly as it was, already inside the total below — there is nothing to change here.</p>' +
       '<div id="fcbCpb" class="fcb-cpb hint">' + costPerBagHtml() + '</div></div></div>' : '';
-    return '<div class="card fcb-card"><div class="card-h"><h3>Payment</h3></div><div class="card-b">' +
+    var hCar = ip('The truck / transport cost for the <b>whole purchase</b>, shared equally over every bag (5,000 for 100 bags is 50 per bag). ' +
+      'It is the product’s <b>Extra cost</b>: each bag costs more, so profit on sales is worked out after it. It is <b>not</b> added to what the supplier is owed — ' +
+      'pay the transporter separately.', 'What is Carriage / transport?');
+    return '<div class="card fcb-card"><div class="card-h"><h3>Carriage &amp; payment</h3></div><div class="card-b">' +
       oldChargesHtml +
+      '<label class="f"><span>Carriage / transport' + hCar.btn + '</span><input class="num" data-fcb="carriage" inputmode="decimal" value="' +
+        esc(B.draft.carriage || '') + '" placeholder="0">' + hCar.box +
+        '<span id="fcbCar" class="hint">' + carriageLineHtml() + '</span></label>' +
       '<div class="f2 fc-amtpaid">' +
         f('paidAmount', 'Amount paid' + hPaid.btn, null) + hPaid.box +
         '<label class="f"><span>Payment method</span><select data-fcb="paymentMethod">' +
@@ -835,6 +863,8 @@ function refreshTotals() {
   });
   var cpb = global.document.getElementById('fcbCpb');
   if (cpb && B.mode === 'purchase') cpb.innerHTML = costPerBagHtml();
+  var carEl = global.document.getElementById('fcbCar');
+  if (carEl && B.mode === 'purchase') carEl.innerHTML = carriageLineHtml();
   /* mode-aware: this used to always write the sale's "Grand total … balance after this payment" wording,
      silently overwriting purchase's "Purchase total" / receive's "Stock total" the moment anything was typed
      (found 2026-09-28 while simplifying this screen) */

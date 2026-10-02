@@ -272,6 +272,8 @@ WH.post = function (type, draft) {
                  (not just a purchase) — this warehouse-app mirror must match it (test-warehouse-server.mjs
                  is the drift guard), since unitCostP here already comes from the same costOf fallback. */
               r.avgCostP = r.qty > 0 && r.avgCostP > 0 ? Math.round((r.qty * r.avgCostP + delta * unitCostP) / (r.qty + delta)) : unitCostP;
+              /* §29: Add stock brings no carriage, so it dilutes the row's carriage average at 0 — same as Inventory.apply */
+              r.avgCarriageP = r.qty > 0 ? Math.round((r.qty * (typeof r.avgCarriageP === 'number' ? r.avgCarriageP : 0)) / (r.qty + delta)) : 0;
             }
             r.qty = Math.round((r.qty + delta) * 1000) / 1000;
             api.put('inventory', r);

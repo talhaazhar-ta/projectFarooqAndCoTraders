@@ -349,7 +349,8 @@ var StockDocs = ERP.StockDocs = {
               Inventory.apply(api, { productId: r.productId, warehouseId: rec.toWarehouseId, qtyDelta: q,
                 kind: 'TRANSFER_IN', ref: number, refType: 'TRANSFER',
                 note: 'From ' + rec.warehouseSnapshot, date: rec.docDate, unitCostP: r.unitCostP,
-                extraCostP: Inventory.rowExtraP(r.productId, r.warehouseId) });   /* the bags keep the extra they had */
+                extraCostP: Inventory.rowExtraP(r.productId, r.warehouseId),   /* the bags keep the extra they had */
+                carriageCostP: Inventory.rowCarriageP(r.productId, r.warehouseId) });   /* ...and their carriage (§29) */
             } else if (type === 'RECEIVE') {
               Inventory.apply(api, { productId: r.productId, warehouseId: r.warehouseId, qtyDelta: q,
                 kind: draft.opening ? 'OPENING_STOCK' : 'ADJUSTMENT_IN', ref: number, refType: 'STOCK_RECEIPT',
@@ -371,7 +372,8 @@ var StockDocs = ERP.StockDocs = {
               Inventory.apply(api, { productId: r.toProductId, warehouseId: r.warehouseId, qtyDelta: q,
                 kind: 'CONVERT_IN', ref: number, refType: 'CONVERSION',
                 note: 'Converted from ' + (r.descriptionEnSnapshot || r.productId), date: rec.docDate,
-                unitCostP: r.unitCostP, extraCostP: Inventory.rowExtraP(r.productId, r.warehouseId) });
+                unitCostP: r.unitCostP, extraCostP: Inventory.rowExtraP(r.productId, r.warehouseId),
+                carriageCostP: Inventory.rowCarriageP(r.productId, r.warehouseId) });
             } else if (type === 'DISPATCH' && deduct) {
               Inventory.apply(api, { productId: r.productId, warehouseId: r.warehouseId, qtyDelta: -q,
                 kind: 'DISPATCH_OUT', ref: number, refType: 'DISPATCH',
@@ -511,7 +513,8 @@ var StockDocs = ERP.StockDocs = {
           if (q > 0) {
             Inventory.apply(api, { productId: o.productId, warehouseId: w,
               qtyDelta: -q, kind: 'RECEIPT_EDIT_OUT', ref: number, refType: 'STOCK_RECEIPT_EDIT',
-              note: 'Reversed on receipt edit', date: prior.docDate, unitCostP: o.unitCostP || 0, extraCostP: ex });
+              note: 'Reversed on receipt edit', date: prior.docDate, unitCostP: o.unitCostP || 0, extraCostP: ex,
+              carriageCostP: 0 });   /* an Add-stock receipt never had carriage: take its bags out at 0 so the re-post nets to nothing (§29) */
           }
           api.del('stockDocItems', o.id);
         });

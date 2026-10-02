@@ -202,6 +202,7 @@ const run=async()=>{
   win.close();
   win=boot(store); ERP=await ready(win);
   for(let i=0;i<60 && !(ERP.S.priceHistory||[]).length;i++) await sleep(50);
+  for(let i=0;i<80 && ERP.Prices.of(rice.id).sell!==state.sell;i++) await sleep(50);   /* the product list lands a moment after the history */
   check('S41 prices survive a restart', ERP.Prices.of(rice.id).sell===state.sell,
     M.fmt(ERP.Prices.of(rice.id).sell)+' vs '+M.fmt(state.sell));
   check('S42 the price history survives', ERP.Prices.history(rice.id).length===state.hist,

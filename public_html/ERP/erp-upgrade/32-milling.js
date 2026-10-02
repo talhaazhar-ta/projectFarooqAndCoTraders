@@ -444,7 +444,7 @@
           } else {
             Inventory.apply(api, {
               productId: it.productId, warehouseId: job.warehouseId, qtyDelta: -it.quantity,
-              extraCostP: typeof it.extraUnitP === 'number' ? it.extraUnitP : undefined,
+              extraCostP: typeof it.extraUnitP === 'number' ? it.extraUnitP : undefined, carriageCostP: 0,
               kind: 'MILL_RECEIPT_REVERSAL_OUT', ref: job.jobNumber, refType: 'MILLING_CANCEL',
               note: 'Milling job cancelled — ' + (reason || 'no reason given'), date: today()
             });
@@ -544,7 +544,7 @@
         (a.lines || []).forEach(function (l) {
           Inventory.apply(api, {
             productId: l.productId, warehouseId: a.warehouseId, qtyDelta: -l.quantity,
-            extraCostP: typeof l.extraUnitP === 'number' ? l.extraUnitP : undefined,
+            extraCostP: typeof l.extraUnitP === 'number' ? l.extraUnitP : undefined, carriageCostP: 0,
             kind: 'MILL_RECEIPT_REVERSAL_OUT', ref: a.arrivalNumber, refType: 'MILL_ARRIVAL_CANCEL',
             note: 'Arrival cancelled — ' + (reason || 'no reason given'), date: today()
           });

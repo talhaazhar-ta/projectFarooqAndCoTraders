@@ -125,7 +125,7 @@ const run = async () => {
     !!$('#panel.on') && D.body.textContent.indexOf(pB.en || pB.ur) > -1);
   check('D6 the panel shows the average purchase price as a read-only label, editable Purchase price / Extra ' +
     'cost boxes, and no selling price of any kind',
-    D.querySelectorAll('#panel .pz-ro').length === 1 &&
+    D.querySelectorAll('#panel .pz-ro').length === 2 &&   /* average purchase price + average extra cost (carriage), §29 */
     !!$('#panel [data-f="buy"]') && !!$('#panel [data-f="extra"]') && !$('#panel [data-f="sell"]') &&
     !$('#panel [data-f="min"]') && !$('#panel [data-f="wholesale"]') && !$('#panel [data-f="reorder"]'));
   const closeBtn = $('#panel [data-close]');

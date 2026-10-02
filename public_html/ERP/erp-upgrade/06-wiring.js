@@ -1145,7 +1145,7 @@ D.addEventListener('input', function (e) {
   }
   if (el.dataset.fcb && B.draft) {
     var key = el.dataset.fcb;
-    if (['invoiceDiscount', 'freight', 'loading', 'otherCharges', 'paidAmount'].indexOf(key) > -1) {
+    if (['invoiceDiscount', 'freight', 'loading', 'otherCharges', 'paidAmount', 'carriage'].indexOf(key) > -1) {
       B.draft[key] = el.value; B.dirty = true; ERP.BuilderUI.refreshTotals(); return;
     }
     if (['notes', 'description', 'referenceNo', 'orderNumber', 'dispatchNumber', 'salesperson',

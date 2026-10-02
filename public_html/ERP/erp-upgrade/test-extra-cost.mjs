@@ -123,7 +123,7 @@ const run=async()=>{
   let labels=Array.from(panel.querySelectorAll('label.f > span:first-child')).map(s=>s.textContent);
   const roVals=()=>Array.from(panel.querySelectorAll('.pz-ro')).map(el=>el.textContent.trim());
   check('E18 the panel shows editable "Purchase price" and "Extra cost per bag" boxes, and no selling price box',
-    labels.indexOf('Purchase price')>-1 && labels.indexOf('Extra cost per bag')>-1 &&
+    labels.indexOf('Purchase price')>-1 && labels.indexOf('Extra cost per bag (carriage / transport)')>-1 &&
     !panel.querySelector('[data-f="sell"]'), labels.join(' | '));
   check('E19 the average purchase price is a read-only label — 2,000 — and the extra-cost box holds what is already saved — 100',
     roVals()[0]==='PKR 2,000' && panel.querySelector('[data-f="extra"]').value===String(100),

@@ -252,3 +252,42 @@ SALE is costed at (`saleCostOf`, invoice `costBuySnapshot`). Stock value (`37-st
   `test-purchase-cost.mjs`, `test-add-stock-pricing.mjs`, `test-price-screen.mjs`, `test-ui-kit.mjs` updated to
   match (no more `data-fcprod`, `Prices.setSell`, read-only sale rate, or below-cost floor).
 - Not seen live yet.
+
+## §29 — Carriage / transport on the purchase = the product's Extra cost (2026-10-02)
+
+### Why
+
+Client: *"we need a separate option in the purchase invoice, Carriage/transport input"*, then, after the first
+build: *"extra cost means Carriage/transport only — one input for this"* (their sum: purchase 6,000 + extra 200 =
+6,200; sell 5 × 6,300 = 31,500; profit 500). So there is **one** figure, not two.
+
+### The model
+
+- **Purchases → Receive stock** has a **Carriage / transport** box for the whole purchase (`draft.carriage`,
+  `purchases.carriageAmount`). It is shared **equally per ordered bag** (`purchaseItems.carriageUnitP` =
+  carriage ÷ total bags, fixed on the line so a part/later delivery carries the same figure). It raises the cost
+  of the bags only — **not** in `grandTotal`, **no** payment voucher, the supplier's balance is unchanged.
+- The stock row blends it as its own bag-weighted average, `inventory.avgCarriageP` (`Inventory.apply`; bags that
+  come in with no carriage — Add stock, opening stock, mill receipts, the warehouse app — blend in at **0**;
+  transfer / brand conversion carry the source row's figure; a purchase edit/reversal takes bags out at the
+  figure they came in with, and an Add-stock receipt edit / mill reversal take theirs out at 0).
+- **Extra cost == carriage.** `Inventory.effectiveExtra(pid)` = the figure pinned on the Prices screen
+  (`p.carriageOverrideP`; 0 is a valid pin; a product that already had an Extra cost saved counts as pinned at it)
+  else the live carriage average of the stock on hand. `extraFor`/`saleCarriageOf` both return it;
+  `saleCostOf` = chosen purchase price + effective extra. The invoice snapshot stays `costBuySnapshot` +
+  `costExtraSnapshot` (= the carriage); there is no separate carriage snapshot.
+- **Prices screen**: read-only "Average extra cost — carriage / transport", the Purchase price box, and ONE
+  **Extra cost per bag (carriage / transport)** box (defaults to the average, pins once changed, "Use the
+  average extra cost" un-pins via `Prices.setCost(pid, {}, {clearExtraOverride:true})`, which also zeroes any
+  older saved `extraP`). `Prices.setCost` writes `carriageOverrideP` + mirrors `extraP`.
+- **Stock value now includes the carriage** (`37-stock-value.js`: row cost = purchase cost + `avgCarriageP`;
+  `StockValue.costOf` — used by brand conversion — stays the pure purchase cost so carriage isn't carried twice).
+  This reverses §28's "stock value never carries the extra" for the carriage average only; a *pinned* figure
+  still drives sale profit only.
+
+### Traps
+
+- A new input on the purchase screen must also be in the `input` allowlist in `06-wiring.js` (item 26's trap).
+- Any NEW code that adds bags must pass `carriageCostP` (or be a fresh-cost kind) through `Inventory.apply`.
+- Carriage typed here AND the same transport under Expenses / Landed costs counts twice in "After expenses".
+- No schema change (new fields live in the JSON `doc`) → `deploy-erp.sh` only. Tests: `test-carriage.mjs`.

@@ -70,7 +70,12 @@ function applySetCost(productId, p, changes, opts) {
   return FDB.tx(['products', 'priceHistory', 'auditLog'], function (api) {
     changes.forEach(function (c) {
       if (c.field === 'costOverride') p.costOverrideP = c.to > 0 ? c.to : null;
-      else if (c.field === 'extra') { p.extraP = c.to; p.extra = M.toR(c.to); }
+      else if (c.field === 'extra') {
+        /* §29: Extra cost IS carriage / transport — one figure. Typing it pins it (0 is a valid pin); "Use the
+           average" (c.clear) lets it follow the carriage average again and drops any older saved figure too. */
+        if (c.clear) { p.carriageOverrideP = null; p.extraP = 0; p.extra = 0; }
+        else { p.carriageOverrideP = c.to; p.extraP = c.to; p.extra = M.toR(c.to); }
+      }
       var h = {
         id: FDB.uid('ph'), productId: productId, productName: p.en || p.ur || productId,
         field: c.field, fieldLabel: c.label, oldValue: c.from, newValue: c.to, money: c.money,
@@ -127,6 +132,8 @@ var Prices = ERP.Prices = {
       : (p.buy ? M.toP(p.buy) : (ctx.averageCost || 0));
     var sellP = p.sellP !== undefined && p.sellP !== null ? p.sellP : (p.sell ? M.toP(p.sell) : 0);
     var extraP = p.extraP !== undefined && p.extraP !== null ? p.extraP : (p.extra ? M.toP(p.extra) : 0);
+    /* §29: the extra cost a sale carries is the pinned figure, else the carriage average of the stock on hand */
+    if (ERP.Inventory && ERP.Inventory.effectiveExtra) extraP = ERP.Inventory.effectiveExtra(productId);
     var fig = figures(buyP, extraP, sellP);
     return {
       product: p, buy: buyP, extra: extraP, totalCost: fig.cost, sell: sellP,
@@ -219,6 +226,7 @@ var Prices = ERP.Prices = {
         if (c.field === 'buy') { p.buyP = c.to; p.buy = M.toR(c.to); }
         else if (c.field === 'extra') {
           p.extraP = c.to; p.extra = M.toR(c.to);
+          p.carriageOverrideP = c.to;       /* §29: Extra cost IS carriage / transport — a typed figure pins it, 0 included */
           /* Bags already in stock keep the extra cost they came in with (Inventory.rowExtraP). A row that was
              still following the product's figure is pinned to the OLD one; and when there was no extra before,
              the first figure typed covers the bags already held (a row that never carried one). */
@@ -287,7 +295,7 @@ var Prices = ERP.Prices = {
     if (!p) return Promise.reject({ validation: ['Product not found.'] });
     var cur = ERP.Inventory.averages(productId);
     var fromOverride = p.costOverrideP > 0 ? p.costOverrideP : 0;
-    var fromExtra = p.extraP > 0 ? p.extraP : 0;
+    var fromExtra = cur.extra;   /* what the box shows: the pinned figure, else the carriage average (§29) */
 
     if (opts.clearOverride) {
       /* un-pinning back to "follow the live average" sets nothing new — it never needs approval, even when
@@ -295,6 +303,14 @@ var Prices = ERP.Prices = {
       if (!fromOverride) return Promise.resolve({ changes: [], unchanged: true });
       return applySetCost(productId, p, [{ field: 'costOverride', label: 'Purchase price (chosen)',
         money: true, from: fromOverride, to: 0 }], Object.assign({}, opts, { approving: true }));
+    }
+
+    var fromPin = ERP.Inventory.extraPin(productId);
+    if (opts.clearExtraOverride) {
+      /* §29: un-pin the extra cost / carriage back to "follow the live average" — like clearOverride it never needs approval */
+      if (fromPin === null) return Promise.resolve({ changes: [], unchanged: true });
+      return applySetCost(productId, p, [{ field: 'extra', label: 'Extra cost per bag (carriage / transport)',
+        money: true, from: fromPin, to: 0, clear: true }], Object.assign({}, opts, { approving: true }));
     }
 
     var displayedBuy = fromOverride || cur.cost;
@@ -314,7 +330,7 @@ var Prices = ERP.Prices = {
       changes.push({ field: 'costOverride', label: 'Purchase price (chosen)', money: true, from: fromOverride, to: buyP });
     }
     if (extraP !== fromExtra) {
-      changes.push({ field: 'extra', label: 'Extra cost per bag', money: true, from: fromExtra, to: extraP });
+      changes.push({ field: 'extra', label: 'Extra cost per bag (carriage / transport)', money: true, from: fromExtra, to: extraP });
     }
     if (!changes.length) return Promise.resolve({ changes: [], unchanged: true });
     return applySetCost(productId, p, changes, opts);
@@ -516,7 +532,7 @@ function calcHtml(buyP, extraP) {
   var row = function (label, p, strong) {
     return '<div class="pz-cr' + (strong ? ' pz-cs' : '') + '"><span>' + label + '</span><b>' + M.fmt(p) + '</b></div>';
   };
-  return { rows: row('Purchase price', buyP) + row('+ Extra cost', extraP) + row('= Total cost per bag', cost, true) };
+  return { rows: row('Purchase price', buyP) + row('+ Extra cost (carriage / transport)', extraP) + row('= Total cost per bag', cost, true) };
 }
 
 /* True when transport/labour for this product was already put on a purchase through the Landed costs screen (or
@@ -563,7 +579,8 @@ function productTransactions(pid) {
     var bags = it.receivedQty === undefined ? it.quantity : it.receivedQty;
     if (!(bags > 0)) return;
     rows.push({ date: pu.purchaseDate, number: pu.purchaseNumber, kind: 'purchase', id: pu.id, bags: bags,
-      price: it.unitPrice, extra: typeof it.extraUnitP === 'number' ? it.extraUnitP : 0 });
+      price: it.unitPrice, extra: typeof it.extraUnitP === 'number' ? it.extraUnitP : 0,
+      carriage: it.carriageUnitP > 0 ? it.carriageUnitP : 0 });
   });
   (S.stockDocItems || []).forEach(function (it) {
     if (it.productId !== pid) return;
@@ -628,16 +645,24 @@ global.PANELS.prices = {
       readonlyBox('Average purchase price (stock on hand)',
         'The bag-weighted average purchase price of the stock on hand right now, from every purchase and ' +
         'Add stock — for reference only. Type the box below to choose a different purchase price.', avg.cost) +
+      readonlyBox('Average extra cost — carriage / transport (stock on hand)',
+        'The bag-weighted average of the carriage typed on the purchases of the stock on hand right now — for ' +
+        'reference only. Type the Extra cost box below to choose a different figure.', avg.carriage) +
       '<div class="f2">' +
         money('buy', 'Purchase price', 'What a sale is costed at. Starts at the average above; once you change ' +
           'it, this figure stays — even when new stock comes in at a different price — until you change it ' +
           'again here.', shownBuy,
           avg.override ? 'Chosen here — the average right now is ' + M.fmt(avg.cost) + '.' : null) +
-        money('extra', 'Extra cost per bag', 'What we pay ourselves on top of the purchase price — transport, ' +
-          'labour, loading. Not on the supplier’s bill. Type 0 if none.', avg.extra) +
+        money('extra', 'Extra cost per bag (carriage / transport)', 'What we pay ourselves on top of the purchase price — ' +
+          'the truck / transport cost of one bag, from the Carriage box on the purchase. Starts at the average above; ' +
+          'once you change it, this figure stays — even when new stock comes in with a different carriage — until you ' +
+          'change it again here. Not on the supplier’s bill. Type 0 for none.', avg.extra,
+          avg.carriageOverride !== null ? 'Chosen here — the average right now is ' + M.fmt(avg.carriage) + '.' : null) +
       '</div>' +
       (avg.override ? '<button type="button" class="pz-chg" data-pzuseavg="' + esc(pid) +
         '">Use the average (' + M.fmt(avg.cost) + ') instead</button>' : '') +
+      (avg.carriageOverride !== null ? '<button type="button" class="pz-chg" data-pzuseavgcar="' + esc(pid) +
+        '">Use the average extra cost (' + M.fmt(avg.carriage) + ') instead</button>' : '') +
       '<div class="pz-calc"><div id="pzCalcRows">' + calc.rows + '</div></div>' +
       '<label class="f"><span>Reason for the change (optional)</span><input data-f="reason" ' +
         'placeholder="e.g. Market price increase"></label>' +
@@ -662,6 +687,7 @@ global.PANELS.prices = {
           return '<div class="pz-h"><span>' + esc(fmtDate(r.date)) + ' · ' + esc(r.number) +
             ' (' + (r.kind === 'purchase' ? 'purchase' : 'stock receipt') + ')</span>' +
             '<b>' + Number(r.bags).toLocaleString('en-US') + ' bags @ ' + M.fmtPlain(r.price) +
+            (r.carriage ? ' + ' + M.fmtPlain(r.carriage) + ' carriage' : '') +
             (r.extra ? ' + ' + M.fmtPlain(r.extra) + ' extra' : '') + '</b>' +
             '<button type="button" class="pz-chg" data-pztxedit="' + r.kind + '" data-id="' + esc(r.id) + '">Edit</button></div>';
         }).join('') + '</div>'
@@ -1160,6 +1186,15 @@ D.addEventListener('click', function (e) {
     Prices.setCost(t.dataset.pzuseavg, {}, { clearOverride: true }).then(function (r) {
       global.paint();
       say(r.unchanged ? 'Already following the average.' : 'Now following the average purchase price again.');
+    }).catch(function (e2) { say(e2 && e2.validation ? e2.validation[0] : 'Could not change that.'); });
+    return;
+  }
+  /* §29: forget the chosen extra cost / carriage and follow the live average again. */
+  if ((t = e.target.closest('[data-pzuseavgcar]'))) {
+    e.preventDefault(); e.stopPropagation();
+    Prices.setCost(t.dataset.pzuseavgcar, {}, { clearExtraOverride: true }).then(function (r) {
+      global.paint();
+      say(r.unchanged ? 'Already following the average.' : 'Now following the average carriage again.');
     }).catch(function (e2) { say(e2 && e2.validation ? e2.validation[0] : 'Could not change that.'); });
     return;
   }

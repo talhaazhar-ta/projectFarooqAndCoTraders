@@ -236,6 +236,8 @@ var DocModel = {
     totals.push({ label: 'Grand total', value: M.fmt(pu.grandTotal), big: true, rule: true });
     totals.push({ label: 'Paid', value: M.fmt(pu.paidAmount) });
     totals.push({ label: 'Payable to supplier', value: M.fmt(pu.grandTotal - pu.paidAmount), bold: true });
+    /* §29: carriage is an information line only — it raises the cost of the bags, not the supplier's bill */
+    if (pu.carriageAmount > 0) totals.push({ label: 'Carriage / transport (paid separately, not in the total)', value: M.fmt(pu.carriageAmount) });
     return {
       kind: 'PURCHASE', entityId: pu.id, title: 'PURCHASE INVOICE', number: pu.purchaseNumber,
       status: ERP.STATUS_LABEL[pu.paymentStatus] || pu.paymentStatus,

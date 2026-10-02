@@ -201,6 +201,10 @@
         }
         var qty = Number(r.qty) || 0, dmg = Number(r.damagedQty) || 0;
         var c = costFor(r, ctx);
+        /* §29 (client: carriage "is the cost of the product"): the carriage per bag on hand is part of what a bag cost.
+           Only added once a cost is known — carriage alone is not a cost price. */
+        var carP = c.src === 'none' ? 0 : (typeof r.avgCarriageP === 'number' && r.avgCarriageP > 0 ? r.avgCarriageP : 0);
+        c = { p: c.p + carP, src: c.src, carriageP: carP };
 
         if (dmg > 0) {
           dmgQty += dmg;
@@ -213,7 +217,7 @@
         rows.push({
           productId: r.productId, name: name, nameUr: ur, cat: cat, kg: pr ? pr.kg : null,
           warehouseId: r.warehouseId, warehouse: wname, qty: qty,
-          costP: c.p, costSrc: c.src, valueP: c.p ? M.mul(c.p, qty) : 0,
+          costP: c.p, carriageP: c.carriageP, costSrc: c.src, valueP: c.p ? M.mul(c.p, qty) : 0,
           sellP: s.p, sellSrc: s.src, sellValueP: s.p ? M.mul(s.p, qty) : 0
         });
       });
@@ -294,7 +298,7 @@
       totals.push({ label: 'STOCK VALUE (at cost)', value: M.fmt(t.valueP), big: true, rule: true });
       if (data.atMills.bags) totals.push({ label: 'Lying at mills — not in the total above', value: nf(data.atMills.bags) + ' bags · ' + M.fmt(data.atMills.valueP), bold: true });
 
-      var notes = ['Value = bags on hand × average purchase cost per bag, as of ' + fmtDate(today()) + '.'];
+      var notes = ['Value = bags on hand × average cost per bag (purchase price + carriage), as of ' + fmtDate(today()) + '.'];
       if (t.estimatedRows) notes.push('* Rs. ' + num(t.estimatedP) + ' of the total uses an estimated cost — the product’s purchase price, as no purchase of it is recorded.');
       if (t.unvaluedRows) notes.push(t.unvaluedProducts + ' product(s), ' + nf(t.unvaluedBags) + ' bags, have no cost recorded and are NOT in the total.');
       if (t.damagedQty) notes.push('Damaged stock (' + nf(t.damagedQty) + ' bags, ' + M.fmt(t.damagedValueP) + ' at cost) is not included.');
@@ -438,6 +442,7 @@
 
   function costCell(r) {
     if (r.costSrc === 'none') return '<span class="pill bad" title="No cost recorded for this product">no cost</span>';
+    if (r.carriageP > 0) return num(r.costP) + ' <span class="pill neu" title="Purchase price ' + num(r.costP - r.carriageP) + ' + carriage ' + num(r.carriageP) + ' per bag">incl. carriage ' + num(r.carriageP) + '</span>';
     if (r.costSrc === 'carried') return num(r.costP) + ' <span class="pill neu" title="The cost recorded when this stock came in (opening stock, stock receipt or transfer)">carried in</span>';
     if (r.costSrc === 'other') return num(r.costP) + ' <span class="pill neu" title="This stock arrived by transfer or adjustment, so it carries the cost of the same product bought elsewhere">from other warehouse</span>';
     if (r.costSrc === 'list') return num(r.costP) + ' <span class="pill low" title="No purchase of this product is recorded — the product’s own purchase price is used">estimated</span>';
@@ -504,7 +509,7 @@
         '<button class="btn" data-svprint>' + I('print') + 'Print / PDF</button>' +
         '<button class="btn pri" data-svexcel>' + I('sheet') + 'Excel</button>' +
       '</div><p class="hint sv-asof">The position right now — ' + esc(fmtDate(today())) +
-        '. Value = bags on hand × average purchase cost per bag.</p></div></div>' +
+        '. Value = bags on hand × average cost per bag (purchase price + carriage).</p></div></div>' +
       '<div id="svResults">' + results() + '</div>';
   };
 
