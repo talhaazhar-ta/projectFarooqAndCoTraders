@@ -28,9 +28,9 @@
   /* ════════════════════════════════════════════════════════════════════════
      STATE
      ════════════════════════════════════════════════════════════════════════ */
-  var SOA = { type: 'CUSTOMER', regionId: '', partyId: '', from: '', to: '' };
+  var SOA = { type: 'CUSTOMER', regionId: '', partyId: '', from: '', to: '', page: 1, perPage: 50 };
   /* an area deleted elsewhere must not stay selected here (the list would silently show nothing) */
-  if (ERP.Areas && ERP.Areas.onDelete) ERP.Areas.onDelete(function (id) { if (SOA.regionId === id) { SOA.regionId = ''; SOA.partyId = ''; } });
+  if (ERP.Areas && ERP.Areas.onDelete) ERP.Areas.onDelete(function (id) { if (SOA.regionId === id) { SOA.regionId = ''; SOA.partyId = ''; SOA.page = 1; } });
 
   function customersInArea() {
     return (global.CUSTOMERS || []).filter(function (c) {
@@ -39,16 +39,19 @@
   }
   function partyList() {
     if (SOA.type === 'SUPPLIER') {
-      return (global.SUPPLIERS || []).filter(function (s) { return s.active !== false; })
-        .slice().sort(function (a, b) {
-          return (a.co || '').toLowerCase() < (b.co || '').toLowerCase() ? -1 : 1;
-        });
+      /* a switched-off supplier (or mill) that still has a balance must stay reachable */
+      return (global.SUPPLIERS || []).filter(function (s) {
+        return s.active !== false || s.id === SOA.partyId || ERP.Ledger.supplier(s.id, null, null).rows.length > 0;
+      }).slice().sort(function (a, b) {
+        return (a.co || '').toLowerCase() < (b.co || '').toLowerCase() ? -1 : 1;
+      });
     }
     return customersInArea().slice().sort(function (a, b) {
       return (a.sh || '').toLowerCase() < (b.sh || '').toLowerCase() ? -1 : 1;
     });
   }
   function partyName(p) { return SOA.type === 'SUPPLIER' ? (p.co || '') : (p.sh || ''); }
+  function partyLabel(p) { return partyName(p) + (SOA.type === 'SUPPLIER' && p.active === false ? ' (inactive)' : ''); }
   function ledgerFor(id) {
     return SOA.type === 'SUPPLIER'
       ? ERP.Ledger.supplier(id, SOA.from || null, SOA.to || null)
@@ -82,10 +85,11 @@
         (SOA.type === 'SUPPLIER' ? 'suppliers on file' : (SOA.regionId ? 'shops in this area' : 'shops on file')) +
         '</option>';
     }
-    return list.map(function (p) {
-      return '<option value="' + p.id + '"' + (p.id === SOA.partyId ? ' selected' : '') + '>' +
-        esc(partyName(p)) + '</option>';
-    }).join('');
+    return (SOA.partyId ? '' : '<option value="" disabled selected>— Choose ' + (SOA.type === 'SUPPLIER' ? 'a supplier' : 'a shop') + ' —</option>') +
+      list.map(function (p) {
+        return '<option value="' + esc(p.id) + '"' + (p.id === SOA.partyId ? ' selected' : '') + '>' +
+          esc(partyLabel(p)) + '</option>';
+      }).join('');
   }
 
   /* ════════════════════════════════════════════════════════════════════════
@@ -93,14 +97,13 @@
      ════════════════════════════════════════════════════════════════════════ */
   global.PAGES.soa = function () {
     var isCust = SOA.type !== 'SUPPLIER';
+    var T = isCust ? 'CUSTOMER' : 'SUPPLIER';
     var list = partyList();
 
-    if (list.length) {
-      if (!list.some(function (p) { return p.id === SOA.partyId; })) SOA.partyId = list[0].id;
-    } else {
-      SOA.partyId = '';
-    }
-    var party = list.length ? list.filter(function (p) { return p.id === SOA.partyId; })[0] : null;
+    /* the screen never picks a party for the reader: a statement of the wrong
+       shop looks exactly like a right one. A choice that no longer exists is dropped. */
+    if (SOA.partyId && !list.some(function (p) { return p.id === SOA.partyId; })) SOA.partyId = '';
+    var party = list.length && SOA.partyId ? list.filter(function (p) { return p.id === SOA.partyId; })[0] : null;
 
     var filterBar = '<div class="bar">' +
         '<label class="f"><span>Party type</span><select data-soaf="type">' +
@@ -113,19 +116,20 @@
           (list.length ? '' : ' disabled') + '>' + partyOptionsHtml(list) + '</select></label>' +
         '<label class="f"><span>From</span><input type="date" data-soaf="from" value="' + esc(SOA.from) + '"></label>' +
         '<label class="f"><span>To</span><input type="date" data-soaf="to" value="' + esc(SOA.to) + '"></label>' +
+        (SOA.from || SOA.to ? '<button class="btn sm" data-soaclear title="Show all dates">All dates</button>' : '') +
         '<div class="grow"></div>' +
-        (isCust
+        (party ? (isCust
           ? '<button class="btn" data-soapay>' + I('wallet') + 'Receive payment</button>' +
             '<button class="btn" data-soarefund>' + I('wallet') + 'Pay this shop</button>'
-          : '<button class="btn" data-soapaysup>' + I('wallet') + 'Pay this supplier</button>') +
-        '<button class="btn" data-soaprint>' + I('print') + 'Print / PDF</button>' +
-        '<button class="btn pri" data-soaexcel>' + I('sheet') + 'Excel</button>' +
+          : '<button class="btn" data-soapaysup>' + I('wallet') + 'Pay this supplier</button>') : '') +
+        '<button class="btn" data-soaprint' + (party ? '' : ' disabled') + '>' + I('print') + 'Print / PDF</button>' +
+        '<button class="btn pri" data-soaexcel' + (party ? '' : ' disabled') + '>' + I('sheet') + 'Excel</button>' +
       '</div>';
+    var head = '<div class="card"><div class="card-h"><h3>Statement of Account</h3>' +
+      '<span class="pill neu">' + (isCust ? 'Customer' : 'Supplier') + ' ledger</span></div><div class="card-b">';
 
     if (!list.length) {
-      return '<div class="card"><div class="card-h"><h3>Statement of Account</h3>' +
-          '<span class="pill neu">' + (isCust ? 'Customer' : 'Supplier') + ' ledger</span></div><div class="card-b">' +
-        filterBar +
+      return head + filterBar +
         '<div class="banner warn" style="margin-top:12px">' + I('alert') +
           '<div><b>No ' + (isCust ? 'shops' : 'suppliers') + ' on file' +
             (isCust && SOA.regionId ? ' in this area' : '') + '</b>' +
@@ -133,84 +137,60 @@
       '</div></div>';
     }
 
-    /* Ledger._roll() (02-services.js) treats an inverted range as "drop
-       everything after To, fold everything before From into opening" — with
-       From after To that silently discards transactions from both the
-       period AND the opening balance instead of raising an error. Every
-       other statement entry point in the app only ever offers preset
-       periods (always valid); this screen is the first to expose raw
-       From/To fields, so it's the first place that inversion is reachable
-       at all — caught here rather than showing a wrong balance. */
+    /* Ledger._roll() treats an inverted range as "drop everything after To, fold
+       everything before From into opening" — a silently wrong balance. Refuse it here. */
     if (SOA.from && SOA.to && SOA.from > SOA.to) {
-      return '<div class="card"><div class="card-h"><h3>Statement of Account</h3>' +
-          '<span class="pill neu">' + (isCust ? 'Customer' : 'Supplier') + ' ledger</span></div><div class="card-b">' +
-        filterBar +
+      return head + filterBar +
         '<div class="banner warn" style="margin-top:12px">' + I('alert') +
           '<div><b>The "From" date is after the "To" date</b>' +
           '<p>Pick a From date on or before the To date.</p></div></div>' +
       '</div></div>';
     }
 
-    var L = ledgerFor(SOA.partyId);
+    if (!party) {
+      return head + filterBar +
+        '<div class="empty" style="margin-top:12px"><div class="ei">' + I('doc') + '</div>' +
+          '<b>Choose ' + (isCust ? 'a shop' : 'a supplier') + ' to see the statement</b>' +
+          '<p>Pick ' + (isCust ? 'a shop' : 'a supplier') + ' above. Dates are optional — leave them empty for the whole account.</p></div>' +
+      '</div></div>';
+    }
 
-    var movementIn = isCust ? L.debit : L.credit;    /* invoiced / purchased  — adds to what they owe */
-    var movementOut = isCust ? L.credit : L.debit;   /* received / paid       — reduces it */
+    var st = ERP.Statement.build(T, SOA.partyId, { from: SOA.from || null, to: SOA.to || null });
+    var b = st.breakdown, stand = ERP.Statement.standing(T, st.closing);
 
-    /* a long-lived account can carry thousands of entries; the on-screen
-       table shows the most recent MAX_ROWS_SHOWN (L.rows is oldest-first,
-       so the tail is the most recent) — Print/PDF and Excel are unaffected
-       and always cover the full period regardless of this cap */
-    var MAX_ROWS_SHOWN = 300;
-    var truncated = L.rows.length > MAX_ROWS_SHOWN;
-    var shownRows = truncated ? L.rows.slice(-MAX_ROWS_SHOWN) : L.rows;
+    /* oldest first, as a ledger reads; the screen pages 50 at a time */
+    var all = st.entries.slice();
+    var pages = Math.max(1, Math.ceil(all.length / SOA.perPage));
+    if (SOA.page > pages) SOA.page = pages;
+    if (SOA.page < 1) SOA.page = 1;
+    var slice = all.slice((SOA.page - 1) * SOA.perPage, SOA.page * SOA.perPage);
+    if (st.bf && SOA.page === 1) slice.unshift(st.bf);
 
-    var rows = shownRows.map(function (r) {
-      return '<tr>' +
-        '<td data-label="Date">' + esc(fmtDate(r.iso)) + '</td>' +
-        '<td data-label="Reference / Folio" class="mono">' + esc(r.ref || '—') + '</td>' +
-        '<td data-label="Description">' + esc(r.description || r.what) + '</td>' +
-        '<td data-label="Debit / بنام" class="r kh-dr">' + (r.dr ? M.fmtPlain(r.dr) : '—') + '</td>' +
-        '<td data-label="Credit / جمع" class="r kh-cr">' + (r.cr ? M.fmtPlain(r.cr) : '—') + '</td>' +
-        '<td data-label="Balance / بقایا" class="r kh-bal' + (r.balance < 0 ? ' neg' : '') + '">' +
-          M.fmtPlain(r.balance) + '</td>' +
-      '</tr>';
-    }).join('');
-
-    return '<div class="card"><div class="card-h"><h3>Statement of Account</h3>' +
-        '<span class="pill neu">' + (isCust ? 'Customer' : 'Supplier') + ' ledger</span></div><div class="card-b">' +
-      filterBar +
+    return head + filterBar +
 
       '<div class="kh-cards">' +
-        card('', 'Opening balance', M.fmt(L.opening)) +
-        card('sale', isCust ? 'Total invoiced' : 'Total purchased', M.fmt(movementIn)) +
-        card('credit', isCust ? 'Total received' : 'Total paid', M.fmt(movementOut)) +
-        card(L.closing > 0 ? 'due' : 'credit', 'Closing balance', M.fmt(L.closing),
-          L.closing > 0 ? (isCust ? 'Owed by the shop' : 'Payable to the supplier')
-            : L.closing < 0 ? 'In credit' : 'Settled') +
+        card('', 'Opening balance', M.fmt(st.opening), st.label) +
+        card('sale', isCust ? 'Total invoiced' : 'Total purchased', M.fmt(b.inflow)) +
+        card('credit', isCust ? 'Total received' : 'Total paid', M.fmt(b.outflow)) +
+        card('credit', isCust ? 'Returns and credits' : 'Returns to supplier', M.fmt(b.credits)) +
+        card(stand.tone, 'Closing balance', M.fmt(st.closing), stand.text) +
       '</div>' +
+      '<div class="kh-eq">' + ERP.Statement.equationHtml(st) + '</div>' +
 
-      (party ? '<p class="hint" style="margin:10px 0 0">' + esc(partyName(party)) +
+      '<p class="hint" style="margin:10px 0 0">' + esc(partyName(party)) +
         (isCust && party.ow ? ' · ' + esc(party.ow) : (!isCust && party.cp ? ' · ' + esc(party.cp) : '')) +
         (function () {
           var region = isCust && party.region && global.regionOf ? global.regionOf(party.region) : null;
           return region ? ' · ' + esc(region.en) : '';
         })() +
-        '</p>' : '') +
+        (st.current !== st.closing ? ' · Balance today ' + M.fmt(st.current) : '') +
+        '</p>' +
 
-      (truncated ? '<p class="hint" style="margin-top:12px">Showing the most recent ' + MAX_ROWS_SHOWN +
-        ' of ' + L.rows.length + ' transactions. Use Print/PDF or Excel for the complete statement.</p>' : '') +
-
-      (L.rows.length
-        ? '<div class="tw" style="margin-top:' + (truncated ? '6' : '12') + 'px"><table class="kh-table"><thead><tr>' +
-            '<th>Date</th><th>Reference / Folio</th><th>Description</th>' +
-            '<th class="r">Debit / بنام</th><th class="r">Credit / جمع</th>' +
-            '<th class="r">Balance / بقایا</th>' +
-          '</tr></thead><tbody>' + rows + '</tbody>' +
-          '<tfoot><tr><td colspan="3"><b>Totals for this period</b></td>' +
-            '<td class="r kh-dr">' + M.fmtPlain(L.debit) + '</td>' +
-            '<td class="r kh-cr">' + M.fmtPlain(L.credit) + '</td>' +
-            '<td class="r kh-bal">' + M.fmtPlain(L.closing) + '</td></tr></tfoot>' +
-          '</table></div>'
+      (all.length
+        ? '<div style="margin-top:12px">' + ERP.Statement.tableHtml(T, slice, {
+            label: 'Totals for this period', debit: st.debit, credit: st.credit,
+            balance: ERP.Statement.balHtml(T, st.closing), balanceLabel: 'Closing'
+          }, false) + '</div>' + ERP.Statement.pagerHtml('data-soapage', SOA.page, pages, all.length)
         : '<p class="hint" style="margin-top:12px">No transactions in this period.</p>') +
     '</div></div>';
   };
@@ -245,6 +225,7 @@
     if (k === 'type') { SOA.type = v; SOA.regionId = ''; SOA.partyId = ''; }
     else if (k === 'regionId') { SOA.regionId = v; SOA.partyId = ''; }
     else { SOA[k] = v; }
+    SOA.page = 1;
     global.paint();
   });
 
@@ -283,32 +264,25 @@
         reason: SOA.type + ' ' + SOA.partyId });
       return;
     }
+    if (e.target.closest('[data-soaclear]')) {
+      e.preventDefault(); SOA.from = ''; SOA.to = ''; SOA.page = 1; global.paint(); return;
+    }
+    var pg = e.target.closest('[data-soapage]');
+    if (pg) {
+      e.preventDefault();
+      SOA.page += pg.dataset.soapage === 'next' ? 1 : -1;
+      if (SOA.page < 1) SOA.page = 1;
+      global.paint(); return;
+    }
     if (e.target.closest('[data-soaexcel]')) {
       e.preventDefault();
       if (!SOA.partyId) return;
       if (invalidRange()) { say('The "From" date is after the "To" date — fix the range first.'); return; }
-      var L = ledgerFor(SOA.partyId);
-      var party = partyById(SOA.partyId);
-      var pname = party ? partyName(party) : '';
-      var head = ['Date', 'Reference', 'Description', 'Debit', 'Credit', 'Balance'];
-      var rows = L.rows.map(function (r) {
-        return [fmtDate(r.iso), r.ref || '', r.description || r.what, M.toR(r.dr), M.toR(r.cr), M.toR(r.balance)];
-      });
-      var title = ['Statement of Account — ' + pname];
-      var period = ['Period', (SOA.from ? fmtDate(SOA.from) : 'Beginning') + ' to ' + (SOA.to ? fmtDate(SOA.to) : 'Today')];
-      var sheet = { name: 'Statement', rows: [title, period, []].concat([head]).concat(rows) };
       try {
-        var bytes = ERP.XLSX.build([sheet],
-          { title: 'Statement of Account', author: ERP.Settings.get().businessName });
-        var blob = new global.Blob([bytes],
-          { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        var a = D.createElement('a');
-        a.href = global.URL.createObjectURL(blob);
-        a.download = 'Statement-' + (pname || SOA.partyId).replace(/[^\w-]+/g, '_') + '.xlsx';
-        D.body.appendChild(a); a.click();
-        setTimeout(function () { global.URL.revokeObjectURL(a.href); a.remove(); }, 1200);
+        var name = ERP.Statement.download(SOA.type === 'SUPPLIER' ? 'SUPPLIER' : 'CUSTOMER', SOA.partyId,
+          { from: SOA.from || null, to: SOA.to || null });
         ERP.Audit.detached({ action: 'Statement of account exported to Excel', entity: 'Report', entityId: 'soa' });
-        say('Excel file downloaded.');
+        say('Excel file downloaded — ' + name);
       } catch (err) { say('Could not build the Excel file.'); }
       return;
     }

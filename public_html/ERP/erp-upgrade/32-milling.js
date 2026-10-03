@@ -567,8 +567,7 @@
   ERP.Ledger.supplier = function (supplierId, fromISO, toISO) {
     var full = origSupplierLedger.call(ERP.Ledger, supplierId, null, null);
     var rows = full.rows.map(function (r) {
-      return { iso: r.iso, ref: r.ref, what: r.what, dr: r.dr, cr: r.cr, kind: r.kind,
-        id: r.id, createdAt: r.createdAt };
+      return Object.assign({}, r);
     });
     Milling.forMill(supplierId).forEach(function (j) {
       if (j.settle !== 'FEE_ONLY') {

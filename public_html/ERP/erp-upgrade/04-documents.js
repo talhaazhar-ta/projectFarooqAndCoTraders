@@ -506,7 +506,7 @@ var DocModel = {
                { label: isCust ? 'Total invoiced' : 'Total purchased', value: M.fmt(isCust ? L.debit : L.credit) },
                { label: isCust ? 'Total received' : 'Total paid', value: M.fmt(isCust ? L.credit : L.debit) },
                { label: 'Closing balance', labelUr: 'بقایا رقم', value: M.fmt(L.closing), big: true, rule: true }],
-      words: words(L.closing), notes: '', ledger: [],
+      words: words(Math.abs(L.closing)), notes: '', ledger: [],
       signatures: ['Accountant', 'Authorised signature'],
       footer: { thanks: 'Please confirm the closing balance at your earliest convenience.', terms: '', bank: '' },
       actions: { whatsapp: isCust }
@@ -574,6 +574,15 @@ var PAPER_CSS = `
 .fcdoc .fc-foot{margin-top:16px;padding-top:9px;border-top:1px solid var(--doc-line);text-align:center;color:var(--doc-mute);font-size:9.5px}
 .fcdoc .fc-foot b{display:block;color:var(--doc-ink);font-size:11.5px;margin-bottom:2px}
 .fcdoc .fc-pagefoot{display:none}
+.fcdoc.fc-stmt table.fc-items{table-layout:fixed}
+.fcdoc.fc-stmt table.fc-items td{font-size:10.5px;white-space:normal;overflow-wrap:anywhere}
+.fcdoc.fc-stmt table.fc-items td:nth-child(2){word-break:break-all;font-size:10px}
+.fcdoc.fc-stmt table.fc-items td.r{white-space:nowrap;overflow-wrap:normal;font-variant-numeric:tabular-nums}
+.fcdoc.fc-stmt table.fc-items td:nth-child(3){word-break:break-word}
+.fcdoc.fc-stmt table.fc-items td:nth-child(4){white-space:normal;overflow-wrap:anywhere;font-size:10px}
+.fcdoc.fc-stmt table.fc-items tr.fc-bf td{background:#F3F0FC !important;font-weight:600;font-style:italic}
+.fcdoc.fc-stmt table.fc-items tfoot td{border-top:2px solid var(--doc-accent)}
+.fcdoc.fc-stmt .fc-tot tr.big td{white-space:nowrap}
 @media print{
   html,body{background:#fff !important}
   body.fc-printing .app,body.fc-printing .tabbar,body.fc-printing #panel,body.fc-printing #scrim,
@@ -589,7 +598,7 @@ var PAPER_CSS = `
   .fcdoc .fc-bottom,.fcdoc .fc-ledger,.fcdoc .fc-sigs{break-inside:avoid;page-break-inside:avoid}
   .fcdoc .fc-pagefoot{display:block;position:fixed;bottom:4mm;left:0;right:0;text-align:center;
     font-size:8px;color:#8C8C99}
-  @page{size:A4;margin:12mm 12mm 14mm}
+  @page{size:A4;margin:12mm 12mm 14mm;@bottom-right{content:"Page " counter(page) " of " counter(pages);font-size:8px;color:#8C8C99}}
 }`;
 
 var Paper = {
@@ -626,7 +635,7 @@ var Paper = {
     }).join('') + '</tr>';
 
     var tbody = m.rows.length ? m.rows.map(function (row) {
-      return '<tr>' + m.columns.map(function (c) {
+      return '<tr' + (row.cls ? ' class="' + esc(row.cls) + '"' : '') + '>' + m.columns.map(function (c) {
         var v = row[c.key];
         if (c.key === 'description') {
           return '<td>' + (row.descriptionUr ? ur(row.descriptionUr) : '') +
@@ -667,7 +676,7 @@ var Paper = {
       return '<div><span>' + esc(r[0]) + (r[2] ? ' ' + ur(r[2]) : '') + '</span><b>' + esc(r[1]) + '</b></div>';
     }).join('') + '</div>' : '';
 
-    return '<div class="fcdoc">' +
+    return '<div class="fcdoc' + (m.kind === 'STATEMENT' ? ' fc-stmt' : '') + '">' +
       (m.cancelled ? '<div class="fc-ribbon">CANCELLED</div>' : m.isDraft ? '<div class="fc-ribbon">DRAFT</div>' : '') +
       '<div class="fc-head"><div>' +
         (b.logoDataUrl ? '<div class="fc-logo"><img src="' + esc(b.logoDataUrl) + '" alt=""></div>'
@@ -728,8 +737,10 @@ var Paper = {
         (m.meta[1] ? m.meta[1][1] : '') + '\nCredit: ' + (m.totals[0] ? m.totals[0].value : '') + '\n\n' + b.name;
     }
     if (m.kind === 'STATEMENT') {
+      var big = m.totals.find(function (t) { return t.big; });
       return b.name + '\n\nAccount statement for ' + (m.party.shop || '') +
-        '\nClosing balance: ' + (m.totals[3] ? m.totals[3].value : '') + '\n\n' + b.name;
+        (m.periodText ? '\nPeriod: ' + m.periodText : '') +
+        '\nClosing balance: ' + (m.closingText || (big ? big.value : '')) + '\n\n' + b.name;
     }
     return m.title + ' ' + m.number + ' — ' + b.name;
   },

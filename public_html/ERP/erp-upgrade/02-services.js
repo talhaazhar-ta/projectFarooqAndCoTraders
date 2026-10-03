@@ -2173,7 +2173,7 @@ var Ledger = ERP.Ledger = {
                     dr: 0, cr: p.amount, kind: 'PAYMENT', id: p.id, createdAt: p.createdAt });
       } else {
         rows.push({ iso: p.paymentDate, ref: p.receiptNumber, what: 'Refund paid — ' + p.method,
-                    dr: p.amount, cr: 0, kind: 'REFUND', id: p.id });
+                    dr: p.amount, cr: 0, kind: 'REFUND', id: p.id, createdAt: p.createdAt });
       }
     });
     S.custReturns.filter(function (r) { return r.customerId === customerId && r.status !== 'CANCELLED'; })
@@ -2199,12 +2199,12 @@ var Ledger = ERP.Ledger = {
                                              p.partyId === supplierId && p.status !== 'REVERSED'; })
       .forEach(function (p) {
         rows.push({ iso: p.paymentDate, ref: p.receiptNumber, what: 'Payment made — ' + p.method,
-                    dr: p.amount, cr: 0, kind: 'PAYMENT', id: p.id });
+                    dr: p.amount, cr: 0, kind: 'PAYMENT', id: p.id, createdAt: p.createdAt });
       });
     S.supReturns.filter(function (r) { return r.supplierId === supplierId && r.status !== 'CANCELLED'; })
       .forEach(function (r) {
         rows.push({ iso: r.returnDate, ref: r.returnNumber, what: 'Return to supplier',
-                    dr: r.debitAmount, cr: 0, kind: 'RETURN', id: r.id });
+                    dr: r.debitAmount, cr: 0, kind: 'RETURN', id: r.id, createdAt: r.createdAt });
       });
     var s = global.supOf && global.supOf(supplierId);
     if (s && s.openingBalanceP) {
@@ -2214,14 +2214,23 @@ var Ledger = ERP.Ledger = {
     var L = Ledger._roll(rows, fromISO, toISO, true);
     return L;
   },
+  /* one total order for every statement: date, then entry time, then reference, then id —
+     so two entries with the same stamp (or none) never swap places between repaints */
+  rowOrder: function (a, b) {
+    if (a.kind === 'OPENING' && b.kind !== 'OPENING' && a.iso === b.iso) return -1;
+    if (b.kind === 'OPENING' && a.kind !== 'OPENING' && a.iso === b.iso) return 1;
+    if (a.iso !== b.iso) return a.iso < b.iso ? -1 : 1;
+    var ac = a.createdAt || '', bc = b.createdAt || '';
+    if (ac !== bc) return ac < bc ? -1 : 1;
+    var ar = String(a.ref || ''), br = String(b.ref || '');
+    if (ar !== br) return ar < br ? -1 : 1;
+    var ai = String(a.id || ''), bi = String(b.id || '');
+    return ai < bi ? -1 : ai > bi ? 1 : 0;
+  },
   _roll: function (rows, fromISO, toISO, credited) {
     /* business date first; for two entries on the same day, the order they
        were actually entered — so a running balance is reproducible */
-    rows.sort(function (a, b) {
-      if (a.iso !== b.iso) return a.iso < b.iso ? -1 : 1;
-      return (a.createdAt || '') < (b.createdAt || '') ? -1
-           : (a.createdAt || '') > (b.createdAt || '') ? 1 : 0;
-    });
+    rows.sort(Ledger.rowOrder);
     var bal = 0, opening = 0, out = [];
     rows.forEach(function (r) {
       var delta = credited ? (r.cr - r.dr) : (r.dr - r.cr);

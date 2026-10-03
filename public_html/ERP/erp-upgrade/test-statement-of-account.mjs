@@ -138,13 +138,14 @@ async function main() {
   const areaPartyCount = $('[data-soaf="partyId"]').options.length;
   const expectAreaParty = w.CUSTOMERS.filter(c => (c.region || '') === c1.region).length;
   check('S9 the Area filter narrows the party list on the statement screen too',
-    areaPartyCount === expectAreaParty, `${areaPartyCount} vs ${expectAreaParty}`);
+    /* + the "— Choose a shop —" line: the screen never picks a shop for the reader */
+    areaPartyCount === expectAreaParty + 1, `${areaPartyCount} vs ${expectAreaParty} + placeholder`);
 
   /* switch to Supplier — same screen, the other ledger */
   change($('[data-soaf="type"]'), 'SUPPLIER'); await sleep(100);
   check('S10 switching party type hides the (customer-only) Area filter', !$('[data-soaf="regionId"]'));
   check('S11 the party list now lists suppliers',
-    $('[data-soaf="partyId"]').options.length === w.SUPPLIERS.filter(s => s.active !== false).length);
+    $('[data-soaf="partyId"]').options.length === w.SUPPLIERS.filter(s => s.active !== false).length + 1);
 
   change($('[data-soaf="partyId"]'), sup.id); await sleep(100);
   const L2 = ERP.Ledger.supplier(sup.id, null, null);
